@@ -79,8 +79,56 @@ INSERT INTO QUSRIJS.QAIJS1CM (CMJOB, CMSEQ, CMCMD) VALUES
   ('ARCHIVE1', 1, 'SAVLIB LIB(APPLIB) DEV(TAP01) ENDOPT(*LEAVE)'),
   ('REPORT2', 1, 'CALL PGM(RPTLIB/ANNREP)');
 
+-- ----------------------------------------------------------------------------
+-- Run history (QAIJSHST) — drives the run-timeline view.
+--
+-- Shape: one row per job *run*. HSDTE is 7-digit CYYMMDD, HSTME is HHMMSS,
+-- HSELAP is elapsed seconds. Durations and clock times are chosen so the
+-- timeline has something worth looking at: a nightly batch window that
+-- overlaps, one long-running job, one failure that is retried successfully,
+-- and enough spread across the day to exercise every time scale.
+--
+-- Window covered: 2025-11-20 00:00 through 2025-11-21 00:00.
+--
+-- NOTE: whether the real QAIJSHST carries one row per job run or one row per
+-- *step* within a run is NOT confirmed (risk R1 — these layouts are not a
+-- published contract). This fixture assumes per-run. Verify with DSPFFD
+-- against a real partition before the timeline SQL shape hardens.
+--
+-- HSJOB values are constrained to job names that exist in QAIJSMST above,
+-- because a history row for an unknown job would be silently undisplayable
+-- on the timeline (the gutter is built from the master file).
+-- ----------------------------------------------------------------------------
 INSERT INTO QUSRIJS.QAIJSHST (HSJOB, HSSEQ, HSDTE, HSTME, HSCC, HSELAP) VALUES
-  ('PAYROLL1', 1, 1251102, 230000, 'N', 142),
-  ('PAYROLL1', 2, 1251101, 230001, 'N', 138),
-  ('PAYROLL2', 1, 1251102, 231000, 'A', 88),
-  ('PAYROLL2', 2, 1251101, 231002, 'N', 91);
+  -- --- 2025-11-19: prior-day context (visible when the window is widened) ---
+  ('PAYROLL1', 1, 1251119, 230000, 'N', 138),
+  ('PAYROLL2', 1, 1251119, 231000, 'N',  86),
+  ('ARCHIVE1', 1, 1251119,  13000, 'N', 2830),
+  ('REPORT2',  1, 1251119,  60000, 'N',  402),
+
+  -- --- 2025-11-20: the main window -----------------------------------------
+  -- Nightly payroll cluster: starts 23:00 and runs past midnight.
+  ('PAYROLL1', 1, 1251120, 230000, 'N', 142),
+  ('PAYROLL2', 1, 1251120, 231000, 'A',  88),   -- genuine failure
+  ('PAYROLL2', 1, 1251120, 231500, 'N',  91),   -- retry after the failure
+  ('BATCH1',   1, 1251120, 233000, 'N', 192),
+
+  -- Long-running archive: 47 minutes, the widest bar in the window.
+  ('ARCHIVE1', 1, 1251120,  13000, 'N', 2830),
+
+  -- Daytime reporting, spread so the 6-hour and day scales both look sane.
+  ('REPORT2',  1, 1251120,  60000, 'N',  390),
+  ('REPORT2',  1, 1251120, 180000, 'N',  371),
+  ('LEGACY1',  1, 1251120,  83000, 'N',  215),
+  ('PAYROLL1', 1, 1251120, 120000, 'N',  137),
+
+  -- A short job that repeats often: exercises the 15-minute scale.
+  ('BATCH1',   1, 1251120,  60000, 'N',   44),
+  ('BATCH1',   1, 1251120,  90000, 'N',   39),
+  ('BATCH1',   1, 1251120, 150000, 'N',   51),
+  ('BATCH1',   1, 1251120, 210000, 'N',   42),
+
+  -- --- 2025-11-21: next day, for a multi-day window -------------------------
+  ('PAYROLL1', 1, 1251121, 230000, 'N', 145),
+  ('ARCHIVE1', 1, 1251121,  13000, 'N', 2791),
+  ('REPORT2',  1, 1251121,  60000, 'N',  388);

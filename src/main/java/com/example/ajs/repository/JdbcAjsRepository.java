@@ -1,9 +1,12 @@
 package com.example.ajs.repository;
 
 import com.example.ajs.domain.AjsJob;
+import com.example.ajs.domain.JobRun;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -118,6 +121,41 @@ public class JdbcAjsRepository implements AjsRepository {
             String cmd = rs.getString(1);
             return cmd == null ? "" : cmd.strip();
         }, jobName);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code HSDTE}/{@code HSTME} are packed legacy numerics that cannot be
+     * compared against a SQL timestamp without provoking SQL0181/CPD4019 (the
+     * failure IBM documents for this file). The range filter therefore happens in
+     * Java, after decoding — the same approach {@link #findScheduledOn} takes.
+     *
+     * <p>Rows whose date is unplottable (null or sentinel) are dropped here rather
+     * than mapped to a default time: a run with no position on a time axis cannot
+     * be drawn, and inventing one would put a bar on the timeline that never
+     * happened. {@link JobRunRowMapper} maps such rows to a null start; this method
+     * is what removes them.
+     */
+    @Override
+    public List<JobRun> findRunsBetween(LocalDateTime from, LocalDateTime to) {
+        if (from == null || to == null) {
+            throw new IllegalArgumentException("from and to must not be null");
+        }
+        if (!from.isBefore(to)) {
+            throw new IllegalArgumentException(
+                    "from must be strictly before to: " + from + " .. " + to);
+        }
+
+        String sql = "SELECT " + JobRunRowMapper.SELECT_COLUMNS
+                + " FROM " + HISTORY + " h";
+
+        return jdbc.query(sql, new JobRunRowMapper()).stream()
+                .filter(run -> run.startedAt() != null)
+                .filter(run -> !run.startedAt().isBefore(from))
+                .filter(run -> run.startedAt().isBefore(to))
+                .sorted(Comparator.comparing(JobRun::startedAt))
+                .toList();
     }
 
     @Override

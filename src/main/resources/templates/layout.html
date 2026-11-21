@@ -140,6 +140,7 @@
     <nav>
         <a th:href="@{/overview}" th:classappend="${active == 'overview'} ? 'active'">Overview</a>
         <a th:href="@{/calendar}" th:classappend="${active == 'calendar'} ? 'active'">Due</a>
+        <a th:href="@{/timeline}" th:classappend="${active == 'timeline'} ? 'active'">Timeline</a>
         <a th:href="@{/failures}" th:classappend="${active == 'failures'} ? 'active'">Failures</a>
         <a th:href="@{/jobs}" th:classappend="${active == 'jobs'} ? 'active'">Inventory</a>
         <a th:href="@{/attention}" th:classappend="${active == 'attention'} ? 'active'">Needs attention</a>

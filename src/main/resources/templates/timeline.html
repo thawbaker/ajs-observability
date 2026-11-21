@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Timeline')}"></head>
+<body>
+<header th:replace="~{layout :: header('timeline')}"></header>
+<main>
+    <h2>Run timeline</h2>
+
+    <div class="note" th:if="${warning != null}" th:text="${warning}">warning</div>
+
+    <!--
+      Positioning is computed here, in the template, from the window bounds —
+      deliberately, so the chart renders with no JavaScript. The app has no build
+      step and does not depend on a CDN, and a monitoring page that goes blank
+      when a script fails to load is worse than a plain one.
+
+      Range is half-open [from, to), matching findRunsBetween: a run starting
+      exactly at `to` belongs to the next window, so paging through days does not
+      double-count it.
+    -->
+    <form method="get" th:action="@{/timeline}" class="tl-controls">
+        <label class="tl-ctl">
+            <span>From</span>
+            <input type="datetime-local" name="from"
+                   th:value="${#temporals.format(from, 'yyyy-MM-dd''T''HH:mm')}"/>
+        </label>
+        <label class="tl-ctl">
+            <span>To</span>
+            <input type="datetime-local" name="to"
+                   th:value="${#temporals.format(to, 'yyyy-MM-dd''T''HH:mm')}"/>
+        </label>
+        <label class="tl-ctl">
+            <span>Time scale</span>
+            <select name="scale">
+                <option value="auto"  th:selected="${scale == 'auto'}">Auto</option>
+                <option value="15min" th:selected="${scale == '15min'}">15 minutes</option>
+                <option value="hour"  th:selected="${scale == 'hour'}">Hour</option>
+                <option value="6hour" th:selected="${scale == '6hour'}">6 hours</option>
+                <option value="day"   th:selected="${scale == 'day'}">Day</option>
+            </select>
+        </label>
+        <button type="submit" class="tl-apply">Apply</button>
+    </form>
+
+    <!--
+      Quick ranges. These are plain links so they work with no JS and are
+      bookmarkable; the resulting URL is a complete description of the view.
+    -->
+    <div class="tl-presets">
+        <span>Quick range:</span>
+        <a th:href="@{/timeline(scale=${scale}, from=${from.minusDays(1)}, to=${from})}">Previous 24h</a>
+        <a th:href="@{/timeline(scale=${scale}, from=${from.plusDays(1)}, to=${to.plusDays(1)})}">Next 24h</a>
+        <a th:href="@{/timeline(scale='day', from=${from.minusDays(6).withHour(0).withMinute(0)}, to=${to})}">Last 7 days</a>
+    </div>
+
+    <div class="tl-shell">
+        <div class="tl-head">
+            <strong th:text="${#temporals.format(from, 'd MMM yyyy HH:mm')} + ' → ' + ${#temporals.format(to, 'd MMM yyyy HH:mm')}">window</strong>
+            <span class="tl-summary">
+                <span th:text="${totalRuns}">0</span> runs ·
+                <span th:text="${#lists.size(lanes)}">0</span> jobs ·
+                <span th:text="${failureRuns}">0</span> abnormal<th:block th:if="${runningRuns > 0}">
+                    · <span th:text="${runningRuns}">0</span> still running</th:block>
+            </span>
+        </div>
+
+        <!-- Empty state must be explicit: a blank chart could mean "no runs" or
+             "the query failed", and conflating those is how a monitor loses trust. -->
+        <div class="empty tl-empty" th:if="${totalRuns == 0}">
+            No runs recorded in this window. Widen the range, or check that the
+            history file is reachable.
+        </div>
+
+        <div class="tl-chart" th:unless="${totalRuns == 0}"
+             th:style="'--from: ' + ${#temporals.format(from, 'yyyy-MM-dd''T''HH:mm')} + ';'"
+             th:attr="data-from=${#temporals.format(from,'yyyy-MM-dd''T''HH:mm')},
+                      data-to=${#temporals.format(to,'yyyy-MM-dd''T''HH:mm')},
+                      data-scale=${scale}">
+            <div class="tl-gutter">
+                <div class="tl-axis-space"></div>
+                <div class="tl-row tl-row-hdr" th:each="lane : ${lanes}">
+                    <span class="tl-job" th:text="${lane.job().jobName()}">JOB</span>
+                    <span class="tl-grp" th:text="${lane.job().applicationGroup()} ?: ''">GRP</span>
+                </div>
+            </div>
+
+            <div class="tl-plot">
+                <div class="tl-axis" id="tlAxis"></div>
+
+                <div class="tl-rows" id="tlRows">
+                    <div class="tl-row" th:each="lane : ${lanes}"
+                         th:classappend="${lane.expectedButDidNotRun()} ? 'tl-missing'">
+
+                        <!-- One bar per run: left edge = start, width = duration. -->
+                        <th:block th:each="run, it : ${lane.runs()}">
+                            <div class="tl-bar"
+                                 th:classappend="${@timelineView.barClass(run)}"
+                                 th:style="'left: ' + ${@timelineView.round2(@timelineView.leftPercent(from, to, run.startedAt()))} + '%; width: ' + ${@timelineView.round2(@timelineView.widthPercent(from, to, run))} + '%'"
+                                 th:attr="title=${run.jobName() + ' — ' + #temporals.format(run.startedAt(), 'd MMM HH:mm:ss') + ' — ' + run.durationDisplay()}">
+                                <span class="tl-lbl" th:text="${run.durationDisplay()}">0s</span>
+                            </div>
+                        </th:block>
+
+                        <!-- A job that was ready but produced no run in the window is
+                             drawn as a distinct marker, not left blank: the absence is
+                             the signal. -->
+                        <div class="tl-norun" th:if="${lane.expectedButDidNotRun()}"
+                             title="Ready, but no run in this window">not run</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tl-legend" th:unless="${totalRuns == 0}">
+            <span><i class="tl-sw tl-normal"></i>Normal</span>
+            <span><i class="tl-sw tl-abnormal"></i>Abnormal</span>
+            <span><i class="tl-sw tl-running"></i>Still running</span>
+            <span><i class="tl-sw tl-norun"></i>Ready, no run</span>
+        </div>
+    </div>
+
+    <!-- Per-run detail. The chart answers "where and how long"; this answers
+         "which one exactly" and carries the gap-between-runs figure. -->
+    <h2>Runs in window</h2>
+    <p class="empty" th:if="${totalRuns == 0}">Nothing to list.</p>
+    <table th:unless="${totalRuns == 0}">
+        <thead>
+        <tr>
+            <th>Job</th><th>Group</th><th>Started</th>
+            <th class="mono">Duration</th><th>Outcome</th><th>Gap from prior</th>
+        </tr>
+        </thead>
+        <tbody>
+        <th:block th:each="lane : ${lanes}">
+            <tr th:each="run, it : ${lane.runs()}"
+                th:classappend="${run.stillRunning()} ? 'dim'">
+                <td class="mono" th:text="${run.jobName()}">JOB</td>
+                <td th:text="${lane.job().applicationGroup()} ?: '—'">GRP</td>
+                <td class="mono" th:text="${#temporals.format(run.startedAt(), 'd MMM HH:mm:ss')}">t</td>
+                <td class="mono" th:text="${run.durationDisplay()}">0s</td>
+                <td>
+                    <span class="tag"
+                          th:classappend="${@timelineView.outcomeTagClass(run)}"
+                          th:text="${@timelineView.outcomeLabel(run)}">Outcome</span>
+                </td>
+                <td class="mono"
+                    th:text="${@timelineView.gapDisplay(lane.gaps().get(it.index))}">—</td>
+            </tr>
+        </th:block>
+        </tbody>
+    </table>
+</main>
+
+<!--
+  Axis ticks. This is the only script on the page and it is an enhancement: with
+  it disabled the bars still render in the correct positions, only the tick
+  labels are absent.
+-->
+<script>
+(function () {
+  const chart = document.querySelector('.tl-chart');
+  if (!chart) return;
+  const from = new Date(chart.dataset.from);
+  const to = new Date(chart.dataset.to);
+  if (isNaN(from) || isNaN(to) || to <= from) return;
+
+  const spanMin = (to - from) / 60000;
+
+  // Bucket sizes in minutes. "auto" picks the smallest bucket that keeps the
+  // tick count readable, so the scale adapts to the window without the user
+  // having to know what a sensible interval is.
+  const BUCKETS = [
+    { min: 15,    max: 100 },
+    { min: 60,    max: 100 },
+    { min: 360,   max: 100 },
+    { min: 1440,  max: 60  },
+    { min: 10080, max: 60  }
+  ];
+  let bucket = null;
+  if (chart.dataset.scale === 'auto') {
+    for (const b of BUCKETS) {
+      if (spanMin / b.min <= b.max) { bucket = b.min; break; }
+    }
+    bucket = bucket || 10080;
+  } else {
+    bucket = { '15min': 15, 'hour': 60, '6hour': 360, 'day': 1440 }[chart.dataset.scale] || 60;
+  }
+
+  const axis = chart.querySelector('.tl-axis');
+  const ticks = Math.min(Math.ceil(spanMin / bucket), 200);
+  let html = '';
+  for (let i = 0; i <= ticks; i++) {
+    const t = new Date(from.getTime() + i * bucket * 60000);
+    if (t > to) break;
+    const pct = ((t - from) / (to - from)) * 100;
+    const label = bucket >= 1440
+      ? t.toLocaleDateString([], { day: 'numeric', month: 'short' })
+      : t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // A tick exactly at the left edge would have its label clipped.
+    const edge = pct < 1;
+    html += '<div class="tl-tick" style="left:' + pct + '%">' +
+            '<span style="' + (edge ? 'left:2px' : '') + '">' + label + '</span></div>';
+  }
+  axis.innerHTML = html;
+
+  // Gridlines share the tick positions so bars can be read against the axis.
+  const plot = chart.querySelector('.tl-plot');
+  if (plot) {
+    const grid = document.createElement('div');
+    grid.className = 'tl-grid';
+    grid.innerHTML = html.replace(/tl-tick/g, 'tl-gline');
+    plot.insertBefore(grid, plot.firstChild);
+  }
+})();
+</script>
+
+<style>
+    .tl-controls { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+                   padding: 14px 16px; margin-bottom: 14px; display: flex; flex-wrap: wrap;
+                   gap: 18px; align-items: flex-end; }
+    .tl-ctl { display: flex; flex-direction: column; gap: 5px; }
+    .tl-ctl > span { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                     letter-spacing: .04em; }
+    .tl-ctl input, .tl-ctl select { background: var(--bg); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 13px;
+        font-family: inherit; }
+    .tl-ctl input:focus, .tl-ctl select:focus { outline: none; border-color: var(--accent); }
+    .tl-apply { background: var(--accent); color: #06121f; border: 0; border-radius: 6px;
+                padding: 7px 16px; font-weight: 600; font-size: 13px; cursor: pointer; }
+    .tl-apply:hover { filter: brightness(1.1); }
+    .tl-presets { margin-bottom: 18px; font-size: 12px; color: var(--muted);
+                  display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+
+    .tl-shell { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+                overflow: hidden; margin-bottom: 28px; }
+    .tl-head { display: flex; align-items: baseline; gap: 14px; padding: 12px 16px;
+               border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .tl-summary { color: var(--muted); font-size: 12px; margin-left: auto; }
+    .tl-empty { margin: 16px; }
+
+    .tl-chart { display: grid; grid-template-columns: 200px 1fr; }
+    .tl-gutter { border-right: 1px solid var(--line); }
+    .tl-axis-space { height: 34px; border-bottom: 1px solid var(--line); }
+    .tl-row { height: 26px; display: flex; align-items: center; gap: 6px;
+              padding: 0 12px; font-size: 12px; border-bottom: 1px solid #202836;
+              white-space: nowrap; overflow: hidden; }
+    .tl-row:hover { background: #161d26; }
+    .tl-row.tl-missing .tl-job { color: var(--warn); }
+    .tl-job { overflow: hidden; text-overflow: ellipsis; }
+    .tl-grp { color: var(--muted); font-size: 11px; margin-left: auto; }
+
+    .tl-plot { position: relative; overflow-x: auto; }
+    .tl-axis { position: relative; height: 34px; border-bottom: 1px solid var(--line);
+               background: var(--panel); min-width: 100%; }
+    .tl-tick, .tl-gline { position: absolute; top: 0; bottom: 0;
+                          border-left: 1px solid var(--line); }
+    .tl-tick span { position: absolute; top: 8px; left: 5px; font-size: 11px;
+                    color: var(--muted); white-space: nowrap; }
+    .tl-grid { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+    .tl-gline { opacity: .4; }
+    .tl-rows { position: relative; z-index: 1; }
+    /* A row in the plot must align with its gutter row, so the borders and
+       heights are deliberately identical to .tl-row. */
+    .tl-plot .tl-row { position: relative; }
+
+    .tl-bar { position: absolute; top: 6px; height: 14px; border-radius: 3px;
+              background: var(--ok); min-width: 2px; }
+    .tl-bar.tl-normal { background: var(--ok); }
+    .tl-bar.tl-abnormal { background: var(--bad); }
+    .tl-bar.tl-running { background: linear-gradient(90deg, var(--accent) 0 55%,
+                          rgba(74,158,255,.28) 55% 100%); }
+    .tl-bar:hover { outline: 2px solid var(--fg); outline-offset: 1px; z-index: 5; }
+    .tl-lbl { position: absolute; left: calc(100% + 6px); top: -2px; font-size: 10px;
+              color: var(--muted); white-space: nowrap; }
+    .tl-norun { position: absolute; left: 8px; top: 6px; font-size: 10px;
+                color: var(--warn); border: 1px dashed var(--warn); border-radius: 3px;
+                padding: 0 6px; height: 14px; line-height: 12px; }
+
+    .tl-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 12px 16px;
+                 border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .tl-sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+             margin-right: 6px; vertical-align: -1px; }
+    .tl-sw.tl-normal { background: var(--ok); }
+    .tl-sw.tl-abnormal { background: var(--bad); }
+    .tl-sw.tl-running { background: var(--accent); }
+    .tl-sw.tl-norun { background: transparent; border: 1px dashed var(--warn); }
+</style>
+</body>
+</html>

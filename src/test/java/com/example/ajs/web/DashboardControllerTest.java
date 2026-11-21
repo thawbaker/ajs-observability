@@ -93,6 +93,77 @@ class DashboardControllerTest {
     }
 
     @Test
+    @DisplayName("timeline renders bars, and a bad range warns instead of returning 400")
+    void timelineRendersAndToleratesBadInput() throws Exception {
+        // The window is pinned to the fixture's seeded history. Using "now" would
+        // silently render the empty state and assert nothing about the bars.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2025-11-20T00:00")
+                        .param("to", "2025-11-21T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(view().name("timeline"))
+                .andExpect(model().attributeExists("lanes", "from", "to", "scale"))
+                .andExpect(content().string(containsString("Run timeline")))
+                // A real bar with server-side geometry, proving the percentage
+                // arithmetic rendered rather than an unformatted expression.
+                .andExpect(content().string(containsString("class=\"tl-bar tl-")))
+                .andExpect(content().string(containsString("tl-abnormal")))
+                .andExpect(content().string(org.hamcrest.Matchers.matchesPattern(
+                        "(?s).*left: [0-9.]+%; width: [0-9.]+%.*")))
+                // The table and legend come AFTER the chart in the template. A
+                // parse error part-way down produced a truncated page that still
+                // returned HTTP 200 and still contained the strings above, so
+                // these assert the tail actually rendered.
+                .andExpect(content().string(containsString("Runs in window")))
+                .andExpect(content().string(containsString("tl-legend")))
+                .andExpect(content().string(containsString("</html>")));
+
+        // An unparseable range must degrade to the default window with a visible
+        // warning. On a monitoring tool a 400 here is a support call, and a blank
+        // chart would read as "nothing ran".
+        mockMvc.perform(get("/timeline").param("from", "not-a-date").with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("Unrecognised start")));
+
+        // An inverted range is the dangerous case: every bar would sit off-screen
+        // and the page would imply no jobs ran.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2025-11-21T00:00")
+                        .param("to", "2025-11-20T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("Start must be before end")));
+    }
+
+    @Test
+    @DisplayName("timeline scale is validated rather than trusted")
+    void timelineScaleIsValidated() throws Exception {
+        // The scale drives tick arithmetic in the template, so an arbitrary value
+        // from the query string must not reach it unbounded.
+        mockMvc.perform(get("/timeline").param("scale", "hour").with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("scale", "hour"));
+
+        mockMvc.perform(get("/timeline").param("scale", "<script>").with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("scale", "auto"));
+    }
+
+    @Test
+    @DisplayName("timeline over a window with no runs says so explicitly")
+    void timelineEmptyWindowIsExplicit() throws Exception {
+        // A blank chart could mean "no runs" or "the query failed". The page must
+        // distinguish them, or the monitor loses trust the first time it is wrong.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "1990-01-01T00:00")
+                        .param("to", "1990-01-02T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("No runs recorded in this window")));
+    }
+
+    @Test
     @DisplayName("dashboards reject an unauthenticated request")
     void dashboardsRequireAuthentication() throws Exception {
         // Deliberately NO .with(asUser): this must be the anonymous case. If

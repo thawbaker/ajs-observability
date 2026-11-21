@@ -56,15 +56,29 @@ CREATE TABLE IF NOT EXISTS QUSRIJS.QAIJS1CM (
     PRIMARY KEY (CMJOB, CMSEQ)
 );
 
--- History / run records. Column set trimmed to what the trend view needs; the
--- real QAIJSHST carries the date encoding that triggers CPD4019, which is why
--- HSDTE is modelled as packed numeric here rather than a native DATE.
+-- History / run records — one row per job run. Column set trimmed to what the
+-- timeline view needs; the real QAIJSHST carries the date encoding that triggers
+-- CPD4019, which is why HSDTE is modelled as packed numeric here rather than a
+-- native DATE.
+--
+-- The key is (HSJOB, HSSEQ, HSDTE, HSTME) and NOT (HSJOB, HSSEQ). The narrower
+-- key was wrong and is worth recording: it permits exactly one history row per
+-- job for all time, which makes a run timeline impossible to populate -- the
+-- second run of any job collides on the primary key. Including the run date and
+-- time is the minimum that allows history.
+--
+-- This is an AUTHORED schema (see the file header), so it encodes our best
+-- understanding of a file we cannot yet inspect. The real key must be confirmed
+-- with DSPFFD against a partition (risk R1) before the timeline SQL hardens.
+--
+-- HSSEQ matches the meaning of JMSEQ/CMSEQ: the position of a submission in a
+-- job's sequence, not a unique run identifier.
 CREATE TABLE IF NOT EXISTS QUSRIJS.QAIJSHST (
     HSJOB    CHAR(10)     NOT NULL,
     HSSEQ    INTEGER      NOT NULL,
-    HSDTE    INTEGER,                 -- run date, CYYMMDD
-    HSTME    INTEGER,                 -- run time, HHMMSS
+    HSDTE    INTEGER      NOT NULL,   -- run date, CYYMMDD
+    HSTME    INTEGER      NOT NULL,   -- run time, HHMMSS
     HSCC     CHAR(1),                 -- completion code
-    HSELAP   INTEGER,                 -- elapsed seconds
-    PRIMARY KEY (HSJOB, HSSEQ)
+    HSELAP   INTEGER,                 -- elapsed seconds, 0 / NULL = still running
+    PRIMARY KEY (HSJOB, HSSEQ, HSDTE, HSTME)
 );

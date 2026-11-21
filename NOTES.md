@@ -72,6 +72,13 @@ R1 schema drift · R2 legacy date encodings · R3 privileged monitoring account 
 R4 running-now not in AJS master · R5 DRDA may be firewalled · R6 polling load ·
 R7 AJS licensing separate from QUSRIJS access · R8 multi-partition drift.
 
+**R1 now has a concrete open question** raised by the timeline work: the key and
+granularity of `QAIJSHST`. The fixture assumes `(HSJOB, HSSEQ, HSDTE, HSTME)`
+with one row per run; the original authored key `(HSJOB, HSSEQ)` could not hold
+history at all. If the real file is keyed differently, or carries one row per
+*step* rather than per run, the timeline's bars would be wrong in a way tests
+against H2 can never reveal. One `DSPFFD` against a real partition retires this.
+
 ---
 
 ## How to run
@@ -115,6 +122,72 @@ Recorded because each one would have reached a stakeholder as a wrong dashboard.
 4. **CHAR columns are blank-padded.** `CMCMD` (`CHAR(200)`) came back padded to
    full width; templates and CSV exports would have carried the padding. Padding
    is now stripped in the repository.
+5. **`QAIJSHST` was keyed so a job could only ever have one run.** The authored
+   schema declared `PRIMARY KEY (HSJOB, HSSEQ)` — no date component — which
+   permits exactly one history row per job for all time. The second run of any
+   job collided. This was caught by the fixture, not by review: seeding a single
+   day of realistic history produced
+   `Unique index or primary key violation ... (HSJOB, HSSEQ)`. The key is now
+   `(HSJOB, HSSEQ, HSDTE, HSTME)`. **This is a guess about a file we cannot
+   inspect** — confirm the real key with `DSPFFD` before the timeline SQL is
+   treated as settled.
+6. **A Thymeleaf parse error returned HTTP 200 with a truncated page.** A nested
+   ternary in `th:classappend` failed to parse, and because the response had
+   already begun streaming, the client received a half-rendered page: gutter
+   rows present, every bar and the entire detail table missing. The MockMvc test
+   passed anyway, because it only asserted strings that appeared *before* the
+   failure. Two fixes: the outcome-to-class mapping moved into
+   `TimelineViewHelper` (Thymeleaf's parser rejects the parenthesised nested
+   conditional outright), and the test now asserts the template's *tail*
+   (`Runs in window`, `tl-legend`, `</html>`) so a mid-page failure cannot pass.
+   Lesson: on a server-rendered chart, "assert something rendered" is not the
+   same as "assert it finished rendering".
+7. **`!warning` on a `String` in the controller.** A compile error, but worth
+   noting because the intent was a null check and the code said negation.
+
+---
+
+## Run timeline (`/timeline`)
+
+Added after the first four dashboards. Answers a question none of the others
+could: *when did jobs actually run, and how long did each take?*
+
+- **Encoding:** each run is one bar. Left edge = start time, width = duration.
+  A scheduling pile-up or a runaway step is visible without reading numbers.
+- **Dynamic time scale:** `Auto` / `15 min` / `Hour` / `6 hour` / `Day`. `Auto`
+  picks the finest bucket that keeps the tick count readable, so the scale
+  adapts to the window. The scale is validated against a fixed set in
+  `DashboardController` rather than trusted, because it drives tick arithmetic.
+- **Data:** `AjsRepository.findRunsBetween(from, to)`, a new method reading
+  `QAIJSHST`. The window is **half-open `[from, to)`** so that paging through
+  days does not double-count a run starting exactly on a boundary.
+- **Empty vs. missing:** jobs are laned from the *master file*, not from history
+  rows, so a job that was expected to run and produced nothing still appears, as
+  a dashed `not run` marker. Deriving lanes from history alone would hide
+  exactly the case an operator is looking for.
+- **A run with no elapsed time is treated as still running**, not as duration
+  zero. The alternative draws an in-flight job as an instantaneous success,
+  which is a false all-clear.
+- **Deliberate visual lie:** bars have a 0.35% minimum width
+  (`TimelineViewHelper.MIN_WIDTH_PCT`). Without it, a short run in a wide window
+  rounds to zero pixels and a job that *did* run looks like one that did not.
+  The tooltip and the detail table carry the true duration.
+- **No JavaScript required to render.** Bar geometry is computed server-side in
+  `TimelineViewHelper`. The only script on the page draws axis ticks; with it
+  disabled the bars stay correct and only the labels disappear.
+- Percentage arithmetic is in `TimelineViewHelper`, not in template expressions.
+  The first attempt put nested `BigDecimal` expressions in a `th:style`; it was
+  unreadable and untestable, and it is what produced bug 6 above.
+
+### Fixture history
+
+`data-ajs.sql` seeds 20 `QAIJSHST` rows across 2025-11-19..21 with a nightly
+batch cluster that overlaps, one 47-minute archive job, a failure that is
+retried successfully, and repeated short jobs to exercise the 15-minute scale.
+Every `HSJOB` names a job present in `QAIJSMST`, because a history row for an
+unknown job is silently undisplayable. **Whether the real `QAIJSHST` holds one
+row per run or one row per *step* within a run is not confirmed** — the fixture
+assumes per-run.
 
 ### Two infrastructure traps worth remembering
 

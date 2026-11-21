@@ -1,6 +1,7 @@
 package com.example.ajs.repository;
 
 import com.example.ajs.domain.AjsJob;
+import com.example.ajs.domain.JobRun;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,6 +10,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -27,6 +29,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @ActiveProfiles("test")
 class JdbcAjsRepositoryTest {
+
+    /**
+     * Rows seeded into {@code QAIJSHST} by {@code data-ajs.sql}. Used by the
+     * read-only guard as a change-detector; update it when the fixture's run
+     * history grows.
+     */
+    private static final int FIXTURE_HISTORY_ROWS = 20;
 
     @Autowired
     private AjsRepository repository;
@@ -162,9 +171,84 @@ class JdbcAjsRepositoryTest {
         assertThat(repository.countJobs()).isEqualTo(before);
 
         // Belt and braces: confirm nothing in the source opened a write path.
-        Integer written = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM QUSRIJS.QAIJSHST WHERE HSCC = 'A'", Integer.class);
-        assertThat(written).isEqualTo(1);
+        // Asserts the *total* row count rather than a count of abnormal rows:
+        // the intent is to detect any write to the table, and pinning a magic
+        // number for one completion code would make this test break every time
+        // the fixture gains history for the timeline view, without telling us
+        // anything more about write safety.
+        Integer historyRows = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM QUSRIJS.QAIJSHST", Integer.class);
+        assertThat(historyRows).isEqualTo(FIXTURE_HISTORY_ROWS);
+    }
+
+    @Test
+    @DisplayName("findRunsBetween returns only runs inside the window, ordered by start")
+    void runWindowIsHalfOpenAndOrdered() {
+        LocalDateTime from = LocalDateTime.of(2025, 11, 20, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2025, 11, 21, 0, 0);
+
+        List<JobRun> runs = repository.findRunsBetween(from, to);
+
+        assertThat(runs).isNotEmpty();
+        assertThat(runs).allSatisfy(run -> {
+            assertThat(run.startedAt()).isNotNull();
+            assertThat(run.startedAt()).isAfterOrEqualTo(from);
+            assertThat(run.startedAt()).isBefore(to);
+        });
+        // Ordered by start time, so the caller can compute gaps without re-sorting.
+        assertThat(runs).isSortedAccordingTo(
+                java.util.Comparator.comparing(JobRun::startedAt));
+        // The fixture's 2025-11-19 and 2025-11-21 rows must be excluded.
+        assertThat(runs).noneSatisfy(run ->
+                assertThat(run.startedAt().toLocalDate()).isEqualTo(LocalDate.of(2025, 11, 19)));
+        assertThat(runs).noneSatisfy(run ->
+                assertThat(run.startedAt().toLocalDate()).isEqualTo(LocalDate.of(2025, 11, 21)));
+    }
+
+    @Test
+    @DisplayName("the window is half-open: a run starting exactly at `to` belongs to the next window")
+    void windowExcludesTheExclusiveUpperBound() {
+        // Adjacent windows share a boundary, so an inclusive upper bound would
+        // double-count the run starting exactly on it and make paging through
+        // days over-report.
+        LocalDateTime boundary = LocalDateTime.of(2025, 11, 20, 23, 0);
+
+        List<JobRun> upTo = repository.findRunsBetween(
+                LocalDateTime.of(2025, 11, 20, 0, 0), boundary);
+        List<JobRun> fromBoundary = repository.findRunsBetween(
+                boundary, LocalDateTime.of(2025, 11, 21, 0, 0));
+
+        assertThat(upTo).noneSatisfy(run ->
+                assertThat(run.startedAt()).isEqualTo(boundary));
+        assertThat(fromBoundary).anySatisfy(run ->
+                assertThat(run.startedAt()).isEqualTo(boundary));
+    }
+
+    @Test
+    @DisplayName("a run with no elapsed time surfaces as running rather than as zero duration")
+    void unfinishedRunIsNotZeroLength() {
+        List<JobRun> runs = repository.findRunsBetween(
+                LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0));
+
+        // The fixture's failure is recorded with a real elapsed time, so it must
+        // NOT be classed as running.
+        assertThat(runs).filteredOn(r -> r.outcome() == AjsJob.LastOutcome.ABNORMAL)
+                .isNotEmpty()
+                .allSatisfy(r -> assertThat(r.stillRunning()).isFalse());
+    }
+
+    @Test
+    @DisplayName("an inverted or empty window is rejected rather than silently returning nothing")
+    void invertedWindowIsRejected() {
+        LocalDateTime t = LocalDateTime.of(2025, 11, 20, 0, 0);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> repository.findRunsBetween(t, t))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> repository.findRunsBetween(t.plusHours(1), t))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private AjsJob job(String name) {

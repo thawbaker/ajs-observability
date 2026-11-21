@@ -1,8 +1,10 @@
 package com.example.ajs.repository;
 
 import com.example.ajs.domain.AjsJob;
+import com.example.ajs.domain.JobRun;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -67,6 +69,24 @@ public interface AjsRepository {
      * @return command texts in execution order
      */
     List<String> findCommandsForJob(String jobName);
+
+    /**
+     * Historical runs whose start falls within the given window, inclusive of
+     * {@code from} and exclusive of {@code to}.
+     *
+     * <p>Feeds the run-timeline view. Ordering is by start time so the caller can
+     * lay bars out in sequence and compute the gap between consecutive runs of a
+     * job without re-sorting.
+     *
+     * <p>The window is deliberately {@code [from, to)} rather than inclusive of
+     * both ends: adjacent windows that share a boundary then do not double-count
+     * the run that starts exactly on it, which is what makes paging through days
+     * on the timeline add up to the right total.
+     *
+     * @param from inclusive start of the window
+     * @param to   exclusive end of the window
+     */
+    List<JobRun> findRunsBetween(LocalDateTime from, LocalDateTime to);
 
     /**
      * Number of job definitions visible. Used by the health/summary view and as

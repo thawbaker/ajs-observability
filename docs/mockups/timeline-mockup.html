@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Run Timeline — mockup</title>
+<!--
+  MOCKUP ONLY. Static, self-contained, no server. Fabricated data.
+  Shares the palette/layout of src/main/resources/templates/layout.html so what
+  you approve here is what gets built. Nothing here is wired into the app.
+-->
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2029; --line: #2b3542;
+    --fg: #e6edf3; --muted: #8b98a5; --accent: #4a9eff;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --row-h: 26px;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { border-bottom:1px solid var(--line); padding:14px 24px;
+           display:flex; align-items:baseline; gap:24px; flex-wrap:wrap;
+           position:sticky; top:0; background:var(--bg); z-index:10; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  nav { display:flex; gap:16px; }
+  nav a { color:var(--muted); text-decoration:none; padding:4px 0;
+          border-bottom:2px solid transparent; font-size:13px; }
+  nav a.active { color:var(--fg); border-bottom-color:var(--accent); }
+  main { padding:24px; max-width:1200px; }
+  h2 { font-size:15px; margin:0 0 12px; font-weight:600; }
+
+  .note { background:var(--panel); border:1px solid var(--line);
+          border-left:3px solid var(--warn); border-radius:6px;
+          padding:12px 14px; margin-bottom:20px; color:var(--muted); font-size:13px; }
+  .note strong { color:var(--fg); }
+
+  /* ---- controls bar ---- */
+  .controls { background:var(--panel); border:1px solid var(--line);
+              border-radius:8px; padding:14px 16px; margin-bottom:20px;
+              display:flex; flex-wrap:wrap; gap:18px; align-items:flex-end; }
+  .ctl { display:flex; flex-direction:column; gap:5px; }
+  .ctl > span { color:var(--muted); font-size:11px; text-transform:uppercase;
+                letter-spacing:.04em; }
+  .ctl input, .ctl select {
+    background:var(--bg); color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:6px 9px; font-size:13px; font-family:inherit;
+  }
+  .ctl input:focus, .ctl select:focus { outline:none; border-color:var(--accent); }
+
+  /* dynamic time scale picker */
+  .scales { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .scales button {
+    background:var(--bg); color:var(--muted); border:0; border-right:1px solid var(--line);
+    padding:6px 12px; font-size:12px; cursor:pointer; font-family:inherit;
+  }
+  .scales button:last-child { border-right:0; }
+  .scales button:hover { color:var(--fg); }
+  .scales button[aria-pressed="true"] { background:var(--accent); color:#06121f; font-weight:600; }
+
+  .spacer { margin-left:auto; }
+  .btn { background:none; border:1px solid var(--line); color:var(--muted);
+         border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer;
+         font-family:inherit; }
+  .btn:hover { color:var(--fg); border-color:var(--accent); }
+  .btn-primary { background:var(--accent); border-color:var(--accent);
+                 color:#06121f; font-weight:600; }
+  .btn-primary:hover { filter:brightness(1.1); color:#06121f; }
+
+  /* ---- chart shell ---- */
+  .chart-wrap { background:var(--panel); border:1px solid var(--line);
+                border-radius:8px; overflow:hidden; margin-bottom:20px; }
+  .chart-head { display:flex; align-items:baseline; gap:14px;
+                padding:12px 16px; border-bottom:1px solid var(--line); }
+  .chart-head .summary { color:var(--muted); font-size:12px; margin-left:auto; }
+
+  .chart { display:grid; grid-template-columns:190px 1fr; }
+  /* default (per-hour) scale — overridden by the scale bar classes below */
+  .chart { --tick-pct: 4.1667%; }
+
+  .gutter { border-right:1px solid var(--line); }
+  .gutter .gh { height:34px; border-bottom:1px solid var(--line); }
+  .gutter .grow { height:var(--row-h); display:flex; align-items:center;
+                  padding:0 12px; font-size:12px; color:var(--fg);
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gutter .grow .grp { color:var(--muted); font-size:11px; margin-left:6px; }
+  .gutter .grow.hdr { color:var(--muted); font-size:11px;
+                      text-transform:uppercase; letter-spacing:.04em; }
+
+  .lane-area { position:relative; overflow-x:auto; }
+  .lane-inner { position:relative; min-width:100%; }
+  .axis { position:sticky; top:0; height:34px; border-bottom:1px solid var(--line);
+          background:var(--panel); z-index:3; }
+  .tick { position:absolute; top:0; bottom:0; border-left:1px solid var(--line); }
+  .tick span { position:absolute; top:8px; left:5px; font-size:11px;
+               color:var(--muted); white-space:nowrap; }
+  .tick.major span { color:var(--fg); }
+  .gridline { position:absolute; top:34px; bottom:0; border-left:1px solid var(--line);
+              opacity:.45; z-index:0; pointer-events:none; }
+  .gridline.major { opacity:.85; }
+  .nowline { position:absolute; top:34px; bottom:0; border-left:2px dashed var(--warn);
+             z-index:4; pointer-events:none; }
+  .nowline::after { content:"now"; position:absolute; top:-14px; left:3px;
+                    font-size:10px; color:var(--warn); }
+
+  .lane { position:relative; height:var(--row-h); border-bottom:1px solid #202836; }
+  .lane:hover { background:#161d26; }
+
+  /* ---- the bar itself: start time = left edge, duration = width ---- */
+  .bar { position:absolute; top:5px; height:14px; border-radius:3px;
+         background:var(--ok); cursor:pointer; min-width:2px; }
+  .bar.ok   { background:var(--ok); }
+  .bar.bad  { background:var(--bad); }
+  .bar.warn { background:var(--warn); }
+  .bar.skip { background:repeating-linear-gradient(45deg,
+                var(--muted) 0 3px, transparent 3px 6px);
+              border:1px solid var(--muted); }
+  .bar.held { background:transparent; border:1px dashed var(--muted); }
+  .bar:hover { outline:2px solid var(--fg); outline-offset:1px; z-index:5; }
+  .bar .lbl { position:absolute; left:calc(100% + 6px); top:-2px; font-size:10px;
+              color:var(--muted); white-space:nowrap; }
+  .bar.narrow .lbl { left:auto; right:calc(100% + 6px); }
+
+  /* current/pending run: hatched, extends to the right edge */
+  .bar.running { background:linear-gradient(90deg, var(--accent) 0 55%,
+                   rgba(74,158,255,.28) 55% 100%); }
+
+  /* ---- dynamic time scales ---- */
+  .chart.scale-hour  { --tick-pct: 4.1667%; }   /* 24 ticks across the window  */
+  .chart.scale-15min { --tick-pct: 1.5625%; }   /* 64 ticks                    */
+  .chart.scale-6h    { --tick-pct: 16.667%; }   /* 6 ticks                     */
+  .chart.scale-day   { --tick-pct: 14.2857%; }  /* 7 ticks, multi-day window   */
+
+  /* ---- legend / tooltip ---- */
+  .legend { display:flex; gap:16px; flex-wrap:wrap; padding:12px 16px;
+            border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+  .legend i { display:inline-block; width:11px; height:11px; border-radius:3px;
+              margin-right:6px; vertical-align:-1px; }
+
+  .tip { position:fixed; pointer-events:none; opacity:0; transition:opacity .09s;
+         background:#0b0f14; border:1px solid var(--line); border-radius:6px;
+         padding:9px 11px; font-size:12px; z-index:50; max-width:290px;
+         box-shadow:0 6px 20px rgba(0,0,0,.55); }
+  .tip.on { opacity:1; }
+  .tip b { display:block; margin-bottom:5px; font-size:13px; }
+  .tip dl { display:grid; grid-template-columns:auto 1fr; gap:3px 12px; margin:0; }
+  .tip dt { color:var(--muted); }
+  .tip dd { margin:0; font-family:ui-monospace, monospace; font-size:11px; }
+
+  /* ---- summary table ---- */
+  table { width:100%; border-collapse:collapse; margin-bottom:28px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { color:var(--muted); font-size:12px; font-weight:500; }
+  td.mono, th.mono { font-family:ui-monospace, SFMono-Regular, monospace; font-size:12px; }
+  tbody tr:hover { background:#161d26; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px;
+         border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .tag.bad { color:var(--bad); border-color:#5c2b2b; }
+  .tag.ok { color:var(--ok); border-color:#2b4c2f; }
+  .tag.warn { color:var(--warn); border-color:#5c4a1f; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AJS Observability</h1>
+  <nav>
+    <a href="#">Overview</a>
+    <a href="#">Due</a>
+    <a href="#">Failures</a>
+    <a href="#">Inventory</a>
+    <a href="#">Needs attention</a>
+    <a href="#" class="active">Timeline</a>
+  </nav>
+</header>
+
+<main>
+  <h2>Run timeline</h2>
+
+  <div class="note">
+    <strong>Mockup.</strong> Static file, fabricated data, not wired into the app.
+    Bars are positioned by left edge = start time, width = duration.
+  </div>
+
+  <!-- ================= CONTROLS ================= -->
+  <div class="controls">
+    <label class="ctl">
+      <span>From</span>
+      <input type="datetime-local" value="2025-11-20T00:00"/>
+    </label>
+    <label class="ctl">
+      <span>To</span>
+      <input type="datetime-local" value="2025-11-21T00:00"/>
+    </label>
+
+    <div class="ctl">
+      <span>Time scale</span>
+      <div class="scales" id="scales">
+        <button type="button" data-scale="hour"  aria-pressed="true">Hour</button>
+        <button type="button" data-scale="15min" aria-pressed="false">15 min</button>
+        <button type="button" data-scale="6h"    aria-pressed="false">6 hour</button>
+        <button type="button" data-scale="day"   aria-pressed="false">Day</button>
+        <input type="number" id="customScale" min="5" max="720" value="60"
+               title="Custom bucket size in minutes" style="width:74px"/>
+        <button type="button" data-scale="custom" aria-pressed="false">Custom</button>
+      </div>
+    </div>
+
+    <label class="ctl">
+      <span>Application group</span>
+      <select>
+        <option>All groups</option>
+        <option>PAYROLL</option>
+        <option>ARCHIVE</option>
+        <option>REPORTING</option>
+      </select>
+    </label>
+
+    <label class="ctl">
+      <span>Zoom</span>
+      <input type="range" id="zoom" min="100" max="600" value="100" step="50"/>
+    </label>
+
+    <div class="spacer"></div>
+    <button class="btn" type="button" onclick="alert('Mockup only.')">Reset</button>
+    <button class="btn-primary btn" type="button" onclick="alert('Mockup only.')">Apply</button>
+  </div>
+
+  <!-- ================= CHART ================= -->
+  <div class="chart-wrap">
+    <div class="chart-head">
+      <strong>20 Nov 2025 00:00 → 21 Nov 2025 00:00</strong>
+      <span class="summary">8 jobs · 21 runs · 1 failure</span>
+    </div>
+
+    <div class="chart scale-hour" id="chart">
+      <div class="gutter" id="gutter">
+        <div class="gh"></div>
+      </div>
+      <div class="lane-area">
+        <div class="lane-inner" id="laneInner">
+          <div class="axis" id="axis"></div>
+          <div id="lanes"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><i style="background:var(--ok)"></i>Completed normally</span>
+      <span><i style="background:var(--bad)"></i>Abnormal</span>
+      <span><i style="background:var(--warn)"></i>Long-running</span>
+      <span><i style="background:var(--accent)"></i>Still running</span>
+      <span><i class="skip" style="background:repeating-linear-gradient(45deg,var(--muted) 0 3px,transparent 3px 6px);border:1px solid var(--muted)"></i>Skipped (*NOSBM)</span>
+      <span><i class="held" style="border:1px dashed var(--muted)"></i>Held — no run</span>
+    </div>
+  </div>
+
+  <!-- ================= SUMMARY TABLE ================= -->
+  <h2>Runs in window</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Job</th><th>Group</th><th>Started</th><th class="mono">Duration</th>
+        <th>Outcome</th><th>Gap from prior</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">PAYROLL1</td><td>PAYROLL</td><td class="mono">23:00:00</td>
+        <td class="mono">2m 22s</td><td><span class="tag ok">Normal</span></td>
+        <td class="mono">—</td>
+      </tr>
+      <tr>
+        <td class="mono">GLLOAD</td><td>PAYROLL</td><td class="mono">23:01:00</td>
+        <td class="mono">11m 04s</td><td><span class="tag ok">Normal</span></td>
+        <td class="mono">1m 00s</td>
+      </tr>
+      <tr>
+        <td class="mono">PAYROLL2</td><td>PAYROLL</td><td class="mono">23:10:00</td>
+        <td class="mono">1m 28s</td><td><span class="tag bad">Abnormal</span></td>
+        <td class="mono">8m 56s</td>
+      </tr>
+      <tr>
+        <td class="mono">ARCHIVE1</td><td>ARCHIVE</td><td class="mono">01:30:00</td>
+        <td class="mono">47m 10s</td><td><span class="tag warn">Long</span></td>
+        <td class="mono">2h 20m</td>
+      </tr>
+      <tr>
+        <td class="mono">ANNREP</td><td>REPORTING</td><td class="mono">06:00:00</td>
+        <td class="mono">6m 30s</td><td><span class="tag ok">Normal</span></td>
+        <td class="mono">4h 30m</td>
+      </tr>
+      <tr>
+        <td class="mono">INVMERGE</td><td>REPORTING</td><td class="mono">06:15:00</td>
+        <td class="mono">—</td><td><span class="tag warn">Running</span></td>
+        <td class="mono">15m</td>
+      </tr>
+      <tr>
+        <td class="mono">BATCHSUM</td><td>PAYROLL</td><td class="mono">06:30:00</td>
+        <td class="mono">3m 12s</td><td><span class="tag">Skipped</span></td>
+        <td class="mono">15m</td>
+      </tr>
+      <tr>
+        <td class="mono">HELDJOB</td><td>ARCHIVE</td><td class="mono">—</td>
+        <td class="mono">—</td><td><span class="tag">Held</span></td>
+        <td class="mono">—</td>
+      </tr>
+    </tbody>
+  </table>
+</main>
+
+<div class="tip" id="tip"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// MOCKUP ONLY — fabricated runs. Shape mirrors what a repository method reading
+// QUSRIJS.QAIJSHST would return: job, start (minute offset in window), duration
+// in minutes (null = still running), outcome.
+// ---------------------------------------------------------------------------
+const WINDOW_START = new Date('2025-11-20T00:00:00');
+const WINDOW_MIN   = 24 * 60;
+
+const RUNS = [
+  { job:'PAYROLL1', grp:'PAYROLL',   start:23*60+0,  dur:2.4,  out:'ok'   },
+  { job:'PAYROLL1', grp:'PAYROLL',   start:24*60-5,  dur:2.3,  out:'ok'   },
+  { job:'GLLOAD',   grp:'PAYROLL',   start:23*60+1,  dur:11.1, out:'ok'   },
+  { job:'PAYROLL2', grp:'PAYROLL',   start:23*60+10, dur:1.5,  out:'bad'  },
+  { job:'PAYROLL2', grp:'PAYROLL',   start:24*60-3,  dur:1.6,  out:'ok'   },
+  { job:'ARCHIVE1', grp:'ARCHIVE',   start:1*60+30,  dur:47.2, out:'warn' },
+  { job:'ARCHIVE1', grp:'ARCHIVE',   start:13*60+0,  dur:2.1,  out:'ok'   },
+  { job:'ANNREP',   grp:'REPORTING', start:6*60+0,   dur:6.5,  out:'ok'   },
+  { job:'ANNREP',   grp:'REPORTING', start:18*60+0,  dur:6.2,  out:'ok'   },
+  { job:'INVMERGE', grp:'REPORTING', start:6*60+15,  dur:null, out:'running'},
+  { job:'BATCHSUM', grp:'PAYROLL',   start:6*60+30,  dur:3.2,  out:'skip' },
+  { job:'HELDJOB',  grp:'ARCHIVE',   start:null,     dur:null, out:'held' },
+];
+
+// Group order mirrors the Inventory view (application group, then job name).
+const ORDER = ['PAYROLL1','GLLOAD','PAYROLL2','BATCHSUM','ARCHIVE1','HELDJOB',
+               'ANNREP','INVMERGE'];
+
+const SCALE_MIN = { hour:60, '15min':15, '6h':360, day:1440 };
+
+const chart   = document.getElementById('chart');
+const gutter  = document.getElementById('gutter');
+const lanes   = document.getElementById('lanes');
+const axis    = document.getElementById('axis');
+const inner   = document.getElementById('laneInner');
+const tip     = document.getElementById('tip');
+let   zoom    = 1;
+
+function fmtClock(min) {
+  const h = Math.floor(min / 60) % 24, m = Math.round(min % 60);
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+}
+function fmtDur(min) {
+  if (min == null) return 'running';
+  const s = Math.round(min * 60);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+  return (h ? h + 'h ' : '') + (m ? m + 'm ' : '') + ss + 's';
+}
+function absTime(min) {
+  const d = new Date(WINDOW_START.getTime() + min*60000);
+  return d.toISOString().slice(11,19);
+}
+
+function render() {
+  // ---- gutter rows ----
+  let gh = '<div class="gh"></div>';
+  let prevGrp = null;
+  ORDER.forEach(job => {
+    const g = (RUNS.find(r => r.job === job) || {}).grp || '';
+    gh += '<div class="grow">' + job +
+          (g !== prevGrp ? '<span class="grp">' + g + '</span>' : '') + '</div>';
+    prevGrp = g;
+  });
+  gutter.innerHTML = gh;
+
+  // ---- axis ticks for the active scale ----
+  const bucket = SCALE_MIN[chart.dataset.scale] || 60;
+  const nTicks = WINDOW_MIN / bucket;
+  let ax = '', grid = '';
+  for (let i = 0; i <= nTicks; i++) {
+    const pct  = (i / nTicks) * 100;
+    const min  = i * bucket;
+    const major = bucket >= 360 ? true : (min % 360 === 0);
+    ax   += '<div class="tick' + (major?' major':'') + '" style="left:' + pct +
+            '%"><span>' + fmtClock(min % 1440) + '</span></div>';
+    grid += '<div class="gridline' + (major?' major':'') + '" style="left:' + pct + '%"></div>';
+  }
+  axis.innerHTML = ax;
+
+  // ---- lanes ----
+  let out = '';
+  ORDER.forEach(job => {
+    const runs = RUNS.filter(r => r.job === job);
+    out += '<div class="lane">' + grid;
+
+    runs.forEach(r => {
+      if (r.start == null) {
+        out += '<div class="bar held" style="left:6px;width:70px" ' +
+               'data-tip="' + esc(job) + '|held|no run in window" ' +
+               'title="Held — not scheduled to run"></div>';
+        return;
+      }
+      const left = (r.start / WINDOW_MIN) * 100;
+      const w    = r.dur == null ? ((WINDOW_MIN - r.start) / WINDOW_MIN) * 100
+                                 : Math.max((r.dur / WINDOW_MIN) * 100, 0.25);
+      const cls  = r.out === 'running' ? 'bad running' : r.out;
+      out += '<div class="bar ' + cls + (w < 8 ? ' narrow' : '') +
+             '" style="left:' + left + '%;width:' + w + '%" data-tip="' +
+             esc(job) + '|' + r.out + '|' + absTime(r.start) + '|' + fmtDur(r.dur) + '">' +
+             '<span class="lbl">' + fmtDur(r.dur) + '</span></div>';
+    });
+
+    out += '</div>';
+  });
+  lanes.innerHTML = out;
+}
+
+function esc(s) { return String(s).replace(/"/g,'&quot;'); }
+
+// ---- dynamic scale buttons ----
+document.getElementById('scales').addEventListener('click', e => {
+  const b = e.target.closest('button[data-scale]');
+  if (!b) return;
+  const custom = document.getElementById('customScale').value;
+  chart.dataset.scale = b.dataset.scale === 'custom'
+    ? 'custom' : b.dataset.scale;
+  if (b.dataset.scale === 'custom') SCALE_MIN.custom = Number(custom);
+  document.querySelectorAll('#scales button[data-scale]')
+    .forEach(x => x.setAttribute('aria-pressed', x === b));
+  render();
+});
+
+// ---- zoom (widen the plotted area, horizontal scroll) ----
+document.getElementById('zoom').addEventListener('input', e => {
+  zoom = Number(e.target.value) / 100;
+  inner.style.width = (zoom * 100) + '%';
+});
+
+// ---- tooltip ----
+lanes.addEventListener('mousemove', e => {
+  const bar = e.target.closest('.bar');
+  if (!bar) { tip.classList.remove('on'); return; }
+  const [job, out, time, dur] = bar.dataset.tip.split('|');
+  tip.innerHTML = '<b>' + job + '</b><dl>' +
+    '<dt>Outcome</dt><dd>' + out + '</dd>' +
+    '<dt>Started</dt><dd>' + (time || '—') + '</dd>' +
+    '<dt>Duration</dt><dd>' + (dur || '—') + '</dd></dl>';
+  tip.classList.add('on');
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - 300) + 'px';
+  tip.style.top  = (e.clientY + 16) + 'px';
+});
+lanes.addEventListener('mouseleave', () => tip.classList.remove('on'));
+
+render();
+</script>
+</body>
+</html>

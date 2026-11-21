@@ -1,6 +1,7 @@
 package com.example.ajs.web;
 
 import com.example.ajs.domain.AjsJob;
+import com.example.ajs.domain.JobRun;
 import com.example.ajs.service.AjsObservabilityService;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -8,6 +9,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 
@@ -98,6 +100,98 @@ public class DashboardController {
         model.addAttribute("commands", service.commandsFor(job));
         model.addAttribute("active", "jobs");
         return "job-detail";
+    }
+
+    /**
+     * Run timeline — every job's runs across a date/time window, as a chart.
+     *
+     * <p>Defaults to the last 24 hours. Like {@link #calendar}, the range is taken
+     * as a string and parsed defensively, so a bad link produces a warning on the
+     * page rather than a 400 — on a monitoring tool a 400 is a support call.
+     *
+     * <p>The scale is a view concern and is echoed back to the template so the
+     * selected control stays selected. It is validated against a fixed set rather
+     * than trusted, because it also drives tick arithmetic.
+     */
+    @GetMapping("/timeline")
+    public String timeline(String from, String to, String scale, Model model) {
+        LocalDateTime end = LocalDateTime.now().withSecond(0).withNano(0);
+        LocalDateTime start = end.minusHours(24);
+        String warning = null;
+
+        // Accept both `datetime-local` (2025-11-20T23:00) and a plain date.
+        if (from != null && !from.isBlank()) {
+            try {
+                start = parseDateTime(from, false);
+            } catch (DateTimeParseException ex) {
+                warning = "Unrecognised start '" + from + "'; showing the last 24 hours.";
+            }
+        }
+        if (to != null && !to.isBlank()) {
+            try {
+                end = parseDateTime(to, true);
+            } catch (DateTimeParseException ex) {
+                warning = "Unrecognised end '" + to + "'; showing the last 24 hours.";
+            }
+        }
+
+        // An inverted range would place every bar off-screen and look like "no
+        // jobs ran", which is the most dangerous thing this page could imply.
+        // Fall back to the default window and say so.
+        if (warning == null && !start.isBefore(end)) {
+            warning = "Start must be before end; showing the last 24 hours.";
+            end = LocalDateTime.now().withSecond(0).withNano(0);
+            start = end.minusHours(24);
+        }
+
+        List<AjsObservabilityService.TimelineLane> lanes = service.timeline(start, end);
+
+        long totalRuns = lanes.stream().mapToLong(l -> l.runs().size()).sum();
+        long failures = lanes.stream()
+                .flatMap(l -> l.runs().stream())
+                .filter(r -> r.outcome() == AjsJob.LastOutcome.ABNORMAL)
+                .count();
+        long running = lanes.stream()
+                .flatMap(l -> l.runs().stream())
+                .filter(JobRun::stillRunning)
+                .count();
+
+        model.addAttribute("lanes", lanes);
+        model.addAttribute("from", start);
+        model.addAttribute("to", end);
+        model.addAttribute("scale", validScale(scale));
+        model.addAttribute("totalRuns", totalRuns);
+        model.addAttribute("failureRuns", failures);
+        model.addAttribute("runningRuns", running);
+        model.addAttribute("warning", warning);
+        model.addAttribute("active", "timeline");
+        return "timeline";
+    }
+
+    /** Scale names the template offers; anything else falls back to the default. */
+    private static final List<String> SCALES =
+            List.of("auto", "15min", "hour", "6hour", "day");
+
+    private static String validScale(String scale) {
+        return scale != null && SCALES.contains(scale) ? scale : "auto";
+    }
+
+    /**
+     * Parses a {@code datetime-local} value, or a bare date.
+     *
+     * <p>A bare date is a whole day, so {@code from} becomes midnight and
+     * {@code to} becomes the end of that day. The caller passes which end is
+     * being parsed, because the same string means something different at each.
+     */
+    private static LocalDateTime parseDateTime(String raw, boolean endOfDay) {
+        String value = raw.strip();
+        if (value.length() <= 10) {
+            LocalDate date = LocalDate.parse(value);
+            return endOfDay
+                    ? date.plusDays(1).atStartOfDay()
+                    : date.atStartOfDay();
+        }
+        return LocalDateTime.parse(value);
     }
 
     /** Held and never-run jobs — the "is anything stuck?" view. */
