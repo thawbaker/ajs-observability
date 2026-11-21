@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Apps')}"></head>
+<body>
+<header th:replace="~{layout :: header('admin-apps')}"></header>
+<main>
+    <h2>Applications</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        The apps users can be denied access to. Because permissions are a
+        denylist, a newly added app is available to everyone immediately.
+    </p>
+
+    <table>
+        <thead>
+        <tr>
+            <th>Name</th>
+            <th>Slug</th>
+            <th>Icon</th>
+            <th>URL</th>
+            <th>Enabled</th>
+            <th>Denied for</th>
+            <th>Actions</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="app : ${apps}">
+            <td th:text="${app.name()}">App</td>
+            <td class="mono" th:text="${app.slug()}">slug</td>
+            <td class="mono" th:text="${app.icon()}">icon</td>
+            <td class="mono" th:text="${app.url()}">url</td>
+            <td>
+                <span class="tag" th:classappend="${app.enabled()} ? 'ok' : 'bad'"
+                      th:text="${app.enabled()} ? 'enabled' : 'disabled'">enabled</span>
+            </td>
+            <td>
+                <!--
+                  Shows which users hold a deny row, so a restriction is never
+                  invisible from the app's own page.
+                -->
+                <span th:if="${deniedBy.get(app.id()).isEmpty()}" style="color: var(--muted);">nobody</span>
+                <span th:each="email, it : ${deniedBy.get(app.id())}"
+                      class="mono" style="font-size: 12px;"
+                      th:text="${email} + ${it.last ? '' : ', '}">email</span>
+            </td>
+            <td class="actions">
+                <form method="post" th:action="@{'/admin/apps/' + ${app.id()} + '/enabled'}">
+                    <input type="hidden" name="enabled" th:value="${!app.enabled()}"/>
+                    <button type="submit" th:text="${app.enabled()} ? 'Disable' : 'Enable'">Disable</button>
+                </form>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+    <h2>Add application</h2>
+    <form method="post" th:action="@{/admin/apps/create}"
+          style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+        <label class="field" style="margin: 0;">
+            <span>Name</span>
+            <input type="text" name="name" required/>
+        </label>
+        <label class="field" style="margin: 0;">
+            <span>Slug</span>
+            <input type="text" name="slug" required/>
+        </label>
+        <label class="field" style="margin: 0;">
+            <span>Icon</span>
+            <input type="text" name="icon" value="layout-grid"/>
+        </label>
+        <label class="field" style="margin: 0;">
+            <span>URL</span>
+            <input type="text" name="url" value="#"/>
+        </label>
+        <button type="submit" class="btn-primary" style="width: auto;">Add</button>
+    </form>
+</main>
+</body>
+</html>

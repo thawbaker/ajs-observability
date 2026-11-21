@@ -1,0 +1,394 @@
+================================================================================
+AJS OBSERVABILITY WEB APPLICATION - REQUIREMENTS & OPTIONS EXPLORATION
+================================================================================
+
+--------------------------------------------------------------------------------
+0. ORIGINAL REQUIREMENTS (verbatim, as provided)
+--------------------------------------------------------------------------------
+
+We have IBM i-i series servers.  They are running Advanced Job Scheduler or AJS.
+We would like to build a web-based application using Spring and Timeleaf as an
+observability layer application on a remote server. One option is to use a JT400
+toolkit or jT400.jar. We want to explore the feasibility of this and if we can't
+do it this way, is there another way to observe AGS jobs scheduled,
+
+(Interpretation notes: "IBM i-i series" = IBM i / AS/400; "Timeleaf" =
+Thymeleaf; "AGS" = AJS, the Advanced Job Scheduler. This document preserves the
+original text above and adds the exploration below.)
+
+
+--------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY - FEASIBILITY VERDICT
+--------------------------------------------------------------------------------
+
+FEASIBLE - but with one important correction to the assumed approach.
+
+* jT400 / jt400.jar is absolutely usable from a Spring Boot + Thymeleaf
+  application, and is the right connection toolkit. It provides both:
+    - a JDBC driver (com.ibm.as400.access.AS400JDBCDriver), and
+    - a rich Java API (AS400, CommandCall, ProgramCall, JobList, etc.).
+
+* However, the recommended primary data source is NOT the jT400 Java API
+  "job" objects. It is direct SQL against the AJS DB2 for i physical files
+  in library QUSRIJS (QAIJSMST, QAIJSHST, QAIJS1CM, ...), reached over the
+  same jt400 JDBC driver. AJS keeps its entire configuration and run history
+  in standard DB2 for i tables, so the whole "observability layer" can be
+  built as read-only SQL queries rendered as dashboards. This is low-risk,
+  fast, and needs no software installed on the IBM i.
+
+* True *real-time* status (a job that is "running right now", its active job
+  log, current step, CPU, etc.) is not fully covered by the AJS physical files
+  alone. For that, combine:
+    - QUSRIJS tables (schedules + last-run outcome), and
+    - IBM i SQL services QSYS2.ACTIVE_JOB_INFO / JOB_INFO, and/or
+    - the job notification exit point / data queue for event-driven updates.
+
+* No REST/JSON API from AJS itself is required, and none is assumed to exist.
+  An optional IBM i Db2 REST endpoint or Integrated Web Services is available
+  if HTTP-only access is ever mandated, but it is not necessary.
+
+Conclusion: Build the Spring Boot + Thymeleaf app with the jt400 JDBC driver,
+read AJS tables via SQL, augment with QSYS2 SQL services and optionally an
+event feed. Multiple fallback options are listed in section 4.
+
+
+--------------------------------------------------------------------------------
+2. UNDERSTANDING THE DATA SOURCE (what AJS actually exposes)
+--------------------------------------------------------------------------------
+
+The IBM Advanced Job Scheduler (AJS) is licensed program product 5770-JS1. It
+extends the base IBM i scheduler (ADDJOBSCDE / WRKJOBSCDE) with dependencies,
+application groups, calendars, holiday/fiscal exclusions, escalation, and
+notifications. AJS is driven by WRKJOBJS and related commands.
+
+Key point: AJS stores all of its data in ordinary DB2 for i physical files in
+library QUSRIJS. Any client that can run SQL (including jt400 JDBC) can read
+them. AJS is NOT limited to its 5250/Navigator screens.
+
+Primary AJS files (library QUSRIJS):
+  QAIJSMST   Job master: one row per AJS job definition + last-run summary.
+  QAIJSHST   Run history records.
+  QAIJS1CM   Command list per job (join key CMJOB = JMJOB).
+  QAIJSDL    List of AJS data libraries.
+  QAIJS1MJ   Active/held job information.
+  (Additional QAIJSxx files exist for calendars, dependencies, escalations.)
+
+Useful QAIJSMST columns (from IBM's own published query set; verify with
+DSPFFD against your release before relying on any field):
+  JMJOB    Job name            JMGRP   Job group
+  JMSEQ    Sequence            JMAPPL  Application group
+  JMTEXT   Description         JMSCH   Schedule code
+  JMSCDNAM Schedule name       JMCAL   Schedule calendar
+  JMHCAL   Holiday calendar    JMFCAL  Fiscal calendar
+  JMTME    Next run time       JMDTE   Next run date (7-digit CYYMMDD;
+                                     sentinel 9999999 = no next run)
+  JMJOBQ   Job queue           JMJBQL  Job queue library
+  JMJOBD   Job description     JMJBDL  Job description library
+  JMUSER   Run-as user profile JMMSGQ  Message queue
+  JMMSGL   Message queue lib   JMRCYA  Recovery action
+  JMSTS    Job status (*READY / *HELD)
+  JMLRD    Last run date (6-digit YYMMDD; 0 = never run)
+  JMLST    Last run status text
+  JMLCC    Last completion code ('N' normal, 'A' abnormal)
+  JMELAP   Last elapsed time (seconds)
+
+Base IBM i scheduler (separate, only if both schedulers are in scope):
+  QSYS2.SCHEDULED_JOB_INFO  -- view over QUSRSYS/QAJOBSCD (WRKJOBSCDE entries)
+  QSYS2.ACTIVE_JOB_INFO()   -- active jobs, subsystem, status
+  QSYS2.JOB_INFO()          -- extended job attributes by qualified job name
+  QSYS2.GET_JOB_INFO()      -- job info by 28-char qualified job name
+
+NOTE: QUSRIJS is IBM-internal in the sense that IBM does not publish a formal
+commitment to the file formats. The tables are widely used and IBM support has
+published SQL query guides against them (see references), but field layouts can
+change between releases. Design the app to tolerate schema drift (see risks).
+
+
+--------------------------------------------------------------------------------
+3. RECOMMENDED SOLUTION - OPTION A (PRIMARY)
+--------------------------------------------------------------------------------
+
+Spring Boot + Thymeleaf + jt400 JDBC, direct read-only SQL over QUSRIJS, with
+QSYS2 SQL services for live job state.
+
+Architecture:
+  Browser  <->  Spring Boot web app (remote Linux/Windows server)
+                   |  Spring MVC + Thymeleaf (server-rendered dashboards)
+                   |  Spring Data / JdbcTemplate or MyBatis
+                   |  HikariCP (optional) + jt400 JDBC driver
+                   |  Read-only IBM i service profile
+                   v
+              IBM i host servers (JDBC / DRDA, port 8471 or 446)
+                   v
+              DB2 for i: QUSRIJS.QAIJSMST / QAIJSHST / QAIJS1CM + QSYS2 services
+
+Why it fits:
+  - Thymeleaf is ideal for server-rendered observability pages; no SPA needed.
+  - jt400 JDBC is mature and pure-Java; no native libraries, easy container.
+  - SQL keeps the IBM i side untouched (no exit programs, no PTFs, no install).
+  - Same driver gives a fallback to CommandCall/ProgramCall for CLI escalation.
+
+Maven dependency (jt400 is on Maven Central under net.sf.jt400):
+  <dependency>
+    <groupId>net.sf.jt400</groupId>
+    <artifactId>jt400</artifactId>
+    <version>21.0.5</version>   <!-- pin to a tested release -->
+  </dependency>
+
+There is a community convenience starter:
+  zeroonebn/jt400-spring-boot-starter (declares AS400 + DataSource beans)
+
+Datasource example (application.yml):
+  spring:
+    datasource:
+      url: jdbc:as400://HOSTNAME/LIBRARY;naming=system;libraries=QUSRIJS
+           ;translate binary=true;prompt=false;errors=full
+      username: ${IBMI_USER}
+      password: ${IBMI_PASSWORD}
+      driver-class-name: com.ibm.as400.access.AS400JDBCDriver
+
+Suggested dashboard pages (Thymeleaf templates):
+  1. Overview            - counts: scheduled today, ready/held, failures 24h
+  2. Run Calendar        - jobs due today / this week (QAIJSMST.JMDTE/JMTME)
+  3. Failures            - JMLCC = 'A', JMLST, elapsed, last run date
+  4. Job Detail          - definition + command list (QAIJS1CM.CMCMD) + history
+  5. History / Trends    - QAIJSHST runs over time, success rate, durations
+  6. Dependency view     - predecessor chains, *DEPW waiting jobs (if modelled)
+  7. Live Now            - QSYS2.ACTIVE_JOB_INFO / WRKACTJOB-style active jobs
+  8. Held / Never Run    - JMSTS = '*HELD', JMLRD = 0, JMDTE = 9999999
+  9. Config/Security     - run-as profiles with *ALLOBJ/*SECADM/*JOBCTL
+ 10. Search/Export       - filter by app, group, queue, user; CSV export
+
+Any of IBM's published AJS SQL statements can be lifted almost verbatim into
+JdbcTemplate queries. Examples (see section 7 references):
+  - Jobs scheduled today (filter JMDTE and JMSTS='*READY')
+  - Abnormal last completion (JMLCC='A')
+  - Jobs that never ran (JMLRD=0)
+  - Job + command list join (QAIJSMST mst JOIN QAIJS1CM cmd ON JMJOB=CMJOB)
+  - Overdue detection (compare JMLRD against CURRENT_DATE)
+  - Privileged run-user review (join QSYS2.USER_INFO)
+
+Held vs ready and the *SBM* recovery codes matter for false alarms: a job with
+recovery *NOSBM that is skipped because the system was down is not a failure of
+the job itself. Encode these semantics in the UI rather than flagging raw rows.
+
+
+--------------------------------------------------------------------------------
+4. ALTERNATIVE AND COMPLEMENTARY OPTIONS
+--------------------------------------------------------------------------------
+
+OPTION B - jt400 Java API (CommandCall / ProgramCall) instead of raw SQL
+  Use CommandCall to run DSPLOGJS / WRKJOBJS / DSPJOBJS and parse spooled output,
+  or ProgramCall to invoke system APIs (QUSLJOB job list, QWCLSCDE schedule list,
+  QUSRJOBI retrieve job info). More code and brittle text parsing, but useful
+  where a capability has no SQL service. Best kept as a targeted fallback, not
+  the main path. Requires the host server / program-call security to allow it.
+
+OPTION C - IBM i SQL services only (no QUSRIJS)
+  QSYS2.ACTIVE_JOB_INFO(), JOB_INFO(), GET_JOB_INFO(), SCHEDULED_JOB_INFO.
+  Excellent for live jobs and the BASE scheduler, but do NOT describe AJS job
+  definitions/dependencies. Use as a complement to Option A, not a replacement.
+  Requires the QSYS2 service PTF levels on your release (7.4/7.5/7.6).
+
+OPTION D - Event-driven feed via exit point / data queue
+  The Job Notification exit point (QIBM_QWT_JOBNOTIFY) writes job lifecycle
+  events (placed on queue, started, ended) to a user data queue. A small
+  IBM i-side program (or a JT400 data-queue reader using DataQueue API) can
+  feed the web app in near real time. Also the Submitted Job Tracker feature
+  (ADD_TRACKED_JOB_QUEUE / job tracking file) tracks submitted jobs by queue.
+  Highest fidelity, but requires change on IBM i (exit program + config).
+
+OPTION E - Logs and journaling
+  DSPLOGJS (AJS scheduler log: job added/changed/submitted, errors, sequence
+  processing), job logs (QEZJOBLOG), and the security audit journal QAUDJRN.
+  Journaling QAIJSMST/QAIJSHST is also possible. Useful for audit/troubleshooting
+  but expensive to parse; keep as a drill-down data source, not the dashboard
+  backbone.
+
+OPTION F - HTTP/REST gateway on IBM i (no JDBC from the remote server)
+  If outbound DRDA/JDBC is blocked, expose DB2 through:
+    - IBM i Integrated Web Services (IWS) REST services, or
+    - IBM i Db2 REST / HTTP functions (QSYS2 HTTPxxx / SYSTOOLS), or
+    - an existing IBM i API gateway / MQ / EDI middleware.
+  Spring Boot then consumes JSON. Adds an IBM i-side component and deployment
+  work; only choose if network/security policy forbids direct JDBC.
+
+OPTION G - Buy / reuse instead of build
+  IBM Navigator for i already provides AJS administration/reporting pages, and
+  IBM has published AJS SQL reporting guides. Third-party schedulers and
+  observability suites (e.g. Fortra/HelpSystems and others) offer job
+  monitoring. Evaluate these before building custom - they may cover 80% of the
+  dashboards. The custom Spring app is still worthwhile for a unified,
+  branded, read-only view spanning multiple IBM i servers.
+
+OPTION H - Graphite/ELK/Grafana style pipeline
+  Land AJS snapshot rows into a time-series store or search index
+  (PostgreSQL, InfluxDB, Elasticsearch) via a poller, then visualize with
+  Grafana/Kibana. Spring Boot can own the poller and still serve Thymeleaf for
+  configuration/exception pages. Best when long-term trend retention or
+  multi-source correlation is required.
+
+Note on the IBM i Navigator AJS screens: they are the reference implementation
+of what an observability layer should show, and are useful to mirror for UX.
+
+
+--------------------------------------------------------------------------------
+5. OPTION COMPARISON
+--------------------------------------------------------------------------------
+
+Option                          Feasibility  Latency   Effort  IBM i change
+--------------------------------------------------------------------------------
+A  jt400 JDBC + QUSRIJS SQL      High         Seconds   Low     None
+B  jt400 CommandCall/ProgramCall Med          Seconds   Med     Maybe (auth)
+C  QSYS2 SQL services only       High         Seconds   Low     PTF level
+D  Exit point / data queue feed  High         Real-time Med-Hi  Yes (exit pgm)
+E  Logs + journaling             Med          Seconds   Med     Journaling
+F  IBM i REST gateway            High         Seconds   Med     Yes
+G  Buy / Navigator for i         High         Varies    Low     None
+H  Time-series/Grafana pipeline  High         Seconds+  Med     None
+
+Recommended core = A + C, optionally D later for true real-time.
+
+
+--------------------------------------------------------------------------------
+6. NON-FUNCTIONAL REQUIREMENTS (proposed)
+--------------------------------------------------------------------------------
+
+Security
+  - Dedicated read-only IBM i user profile (no *ALLOBJ, no *JOBCTL).
+    Grant only *USE to QUSRIJS and read access to required QSYS2 services.
+  - Credentials in a secrets manager (Vault, AWS/Azure secret store, env vars);
+    never in git. Consider Kerberos/SSO for the web users.
+  - TLS to the IBM i, and HTTPS to the browser. Mask sensitive data on screen.
+  - Respect IBM i object authority; some fields return NULL without authority.
+
+Performance / scale
+  - Poll intervals configurable (e.g. 30-120s for live, 5-15min for inventory).
+  - Cache slow-changing inventory; only poll what the page needs.
+  - Target < 2s p95 page render for a few thousand AJS jobs; paginate lists.
+  - Connection pool sized carefully; DB2 for i host server has job limits.
+
+Reliability
+  - App degrades gracefully when the IBM i is unreachable (last-known-good
+    snapshot + clear stale indicator). Never let one host block all others.
+  - Multi-server support: a host registry so many IBM i partitions are observed
+    from one deployment.
+
+Maintainability
+  - Abstract the AJS field mapping behind a repository/DAO layer with a
+    "schema compatibility" check (e.g. validate columns at startup, log drift).
+  - Date decoding helpers for CYYMMDD (JMDTE), YYMMDD (JMLRD), and the
+    9999999 / 0 sentinels - these cause real SQL errors (SQL0181/CPD4019).
+  - Automated tests with a mock/recorded result set; no dependence on live i.
+
+Observability of the observer
+  - Health endpoint (Spring Actuator), metrics, structured logs, alerting if a
+    poll fails or a host goes dark.
+
+
+--------------------------------------------------------------------------------
+7. RISKS AND MITIGATIONS
+--------------------------------------------------------------------------------
+
+R1. QUSRIJS file formats are not a formally supported public API.
+    -> Treat as read-only, version-pin expectations, detect schema drift at
+       startup, keep a compatibility layer, test after every IBM i PTF/release.
+R2. Date/time fields use legacy encodings (CYYMMDD, YYMMDD) and sentinels
+    (9999999, 0), causing SQL0181/CPD4019 errors.
+    -> Centralise decoding; never raw-cast without guards. See IBM support note
+       on QAIJSHST date errors.
+R3. Authority / audit exposure of a monitoring account.
+    -> Least-privilege read-only profile; no *ALLOBJ; review with security.
+R4. "Running now" state is not in the AJS master file.
+    -> Add QSYS2.ACTIVE_JOB_INFO and/or the job-notification event feed.
+R5. Network path to IBM i host servers (DRDA) may be blocked by policy.
+    -> Fall back to Option C/F (SQL services via REST gateway).
+R6. Flow control: polling too aggressively can consume IBM i jobs/CPU.
+    -> Adaptive polling, caching, off-peak inventory scans, pool limits.
+R7. Licensing: AJS is separately licensed (5770-JS1); QUSRIJS access does not
+    grant AJS rights, and vice versa. Confirm entitlement per partition.
+R8. Multi-partition drift: file layouts/PTF levels differ per server.
+    -> Per-host capability detection and feature flags in the UI.
+
+
+--------------------------------------------------------------------------------
+8. SUGGESTED IMPLEMENTATION PLAN (proof of concept -> production)
+--------------------------------------------------------------------------------
+
+Phase 0 - Discovery (1 week)
+  - Inventory IBM i releases, PTF/service levels, AJS version, partition list.
+  - DSPFFD QUSRIJS/QAIJSMST, QAIJSHST, QAIJS1CM on each host; record layouts.
+  - Confirm network access to JDBC host server and required authority.
+  - Agree the initial dashboard set (likely: today, failures, inventory, live).
+
+Phase 1 - PoC (1-2 weeks)
+  - Spring Boot skeleton, Thymeleaf, Spring Security, Actuator.
+  - One datasource, one query (jobs scheduled today), one page. Prove E2E.
+  - Date-decoding helpers + startup schema validation.
+
+Phase 2 - Core dashboards (2-4 weeks)
+  - Failures, inventory, job detail + command list, history/trends, held/never.
+  - Live view via QSYS2.ACTIVE_JOB_INFO.
+  - Multi-host registry, caching, graceful degradation.
+
+Phase 3 - Hardening (2 weeks)
+  - Secrets management, SSO, TLS, least privilege, audit logging.
+  - Tests, CI/CD, container packaging, dashboards for the app itself.
+
+Phase 4 - Optional real-time (as needed)
+  - Job notification exit point / data queue feed; alerting and escalation.
+
+Phase 5 - Optional retention/analytics
+  - Land snapshots into PostgreSQL/Elasticsearch; Grafana/Kibana or custom
+    trend views; long-term SLA reporting.
+
+
+--------------------------------------------------------------------------------
+9. OPEN QUESTIONS TO RESOLVE WITH STAKEHOLDERS
+--------------------------------------------------------------------------------
+
+1. Is the goal read-only observability, or also hold/release/submit (write)?
+   (Write actions raise risk and authority requirements substantially.)
+2. How real-time must "running" status be - seconds, minutes, or best-effort?
+3. How many IBM i partitions must be visible in one app?
+4. Which dashboards are must-have for v1 vs. nice-to-have?
+5. Is direct JDBC from the remote server permitted by network/security policy?
+6. What retention/trend history is required, and who consumes the alerts?
+7. Which user profiles run AJS jobs, and are any overly privileged?
+8. Who owns the read-only service account, and how will secrets rotate?
+9. Are both AJS and the base scheduler in scope, or AJS only?
+
+
+--------------------------------------------------------------------------------
+10. REFERENCES
+--------------------------------------------------------------------------------
+
+- IBM: Advanced Job Scheduler (AJS) - Planning and Reporting Using SQL
+  https://www.ibm.com/support/pages/ibm-i-%E2%80%94-advanced-job-scheduler-ajs-planning-and-reporting-using-sql
+- IBM: Useful queries to display information not provided on AJS interfaces
+  https://www.ibm.com/support/pages/useful-queries-display-information-not-provided-ajs-interfaces
+- IBM: QSYS2.SCHEDULED_JOB_INFO
+  https://www.ibm.com/support/pages/qsys2scheduledjobinfo
+- IBM: QSYS2.ACTIVE_JOB_INFO()
+  https://www.ibm.com/support/pages/qsys2activejobinfo
+- IBM: IBM i Services (SQL)
+  https://www.ibm.com/support/pages/ibm-i-services-sql
+- IBM: CPD4019/SQL0181 on AJS history file QAIJSHST
+  https://www.ibm.com/support/pages/cpd4019-and-sql0181-errors-running-sql-against-ajs-history-file-qaijshst
+- IBM: Troubleshooting the Advanced Job Scheduler (IBM i 7.4)
+  https://www.ibm.com/docs/en/i/7.4.0?topic=scheduler-troubleshooting-advanced-job
+- IBM: Job Notification exit point (QIBM_QWT_JOBNOTIFY) / Monitoring a job queue
+  https://www.mcpressonline.com/programming/apis/the-api-corner-monitoring-a-job-queue
+- IBM: Submitted Job Tracker (IBM i 7.6)
+  https://www.ibm.com/docs/en/i/7.6.0?topic=procedure-submitted-job-tracker
+- jT400 (JTOpen) project and Maven coordinates
+  https://github.com/ibm/i-jtopen  (artifact: net.sf.jt400:jt400)
+- jt400-spring-boot-starter (community)
+  https://github.com/zeroonebn/zeroonebn/tree/main/jt400-spring-boot-starter
+- IBM Navigator for i (existing AJS views; reference UX)
+  https://www.ibm.com/docs/en/i/7.5.0?topic=services-scheduled-job-info-view
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

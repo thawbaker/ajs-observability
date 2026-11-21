@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security">
+<head th:fragment="head(title)">
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title th:text="${title} + ' — AJS Observability'">AJS Observability</title>
+    <style>
+        :root {
+            --bg: #0f1419; --panel: #1a2029; --line: #2b3542;
+            --fg: #e6edf3; --muted: #8b98a5; --accent: #4a9eff;
+            --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; background: var(--bg); color: var(--fg);
+            font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        }
+        header {
+            border-bottom: 1px solid var(--line); padding: 14px 24px;
+            display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap;
+            position: sticky; top: 0; background: var(--bg); z-index: 10;
+        }
+        header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+        header .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+        nav { display: flex; gap: 16px; }
+        nav a {
+            color: var(--muted); text-decoration: none; padding: 4px 0;
+            border-bottom: 2px solid transparent; font-size: 13px;
+        }
+        nav a:hover { color: var(--fg); }
+        nav a.active { color: var(--fg); border-bottom-color: var(--accent); }
+        main { padding: 24px; max-width: 1200px; }
+        h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+        .cards {
+            display: grid; gap: 12px; margin-bottom: 28px;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        }
+        .card {
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: 8px; padding: 14px 16px;
+        }
+        .card .n { font-size: 26px; font-weight: 600; line-height: 1.1; }
+        .card .l { color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .card.bad .n { color: var(--bad); }
+        .card.warn .n { color: var(--warn); }
+        .card.ok .n { color: var(--ok); }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 28px; }
+        th, td {
+            text-align: left; padding: 8px 10px;
+            border-bottom: 1px solid var(--line); vertical-align: top;
+        }
+        th { color: var(--muted); font-size: 12px; font-weight: 500; }
+        td.mono, th.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+        tbody tr:hover { background: #161d26; }
+        tr.dim td { opacity: .7; }
+        .tag {
+            display: inline-block; padding: 1px 7px; border-radius: 10px;
+            font-size: 11px; border: 1px solid var(--line); color: var(--muted);
+            white-space: nowrap;
+        }
+        .tag.bad { color: var(--bad); border-color: #5c2b2b; }
+        .tag.ok { color: var(--ok); border-color: #2b4c2f; }
+        .tag.warn { color: var(--warn); border-color: #5c4a1f; }
+        .empty { color: var(--muted); padding: 14px 0; font-style: italic; }
+        .note {
+            background: var(--panel); border: 1px solid var(--line);
+            border-left: 3px solid var(--warn); border-radius: 6px;
+            padding: 12px 14px; margin-bottom: 20px; color: var(--muted); font-size: 13px;
+        }
+        a { color: var(--accent); }
+        code { font-family: ui-monospace, monospace; font-size: 12px; }
+        pre {
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 12px;
+            margin: 0 0 8px;
+        }
+        dl.kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 16px; margin: 0 0 24px; }
+        dl.kv dt { color: var(--muted); font-size: 12px; }
+        dl.kv dd { margin: 0; }
+
+        /* --- authentication and admin additions --- */
+        header .who { color: var(--muted); font-size: 12px; margin-left: auto; display: flex;
+                      align-items: center; gap: 10px; }
+        header .who .role { padding: 1px 7px; border-radius: 10px; font-size: 11px;
+                            border: 1px solid var(--line); color: var(--accent); }
+        header .who form { margin: 0; }
+        header .who button {
+            background: none; border: 1px solid var(--line); color: var(--muted);
+            border-radius: 6px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+        }
+        header .who button:hover { color: var(--fg); border-color: var(--accent); }
+
+        .auth-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+        .auth-card {
+            background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 28px 30px; width: 100%; max-width: 380px;
+        }
+        .auth-card h1 { font-size: 18px; margin: 0 0 4px; }
+        .auth-sub { color: var(--muted); font-size: 12px; margin: 0 0 22px; }
+        .field { display: block; margin-bottom: 14px; }
+        .field span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+        .field small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
+        .field input {
+            width: 100%; background: var(--bg); color: var(--fg);
+            border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 14px;
+        }
+        .field input:focus { outline: none; border-color: var(--accent); }
+        .btn-primary {
+            width: 100%; background: var(--accent); color: #06121f; border: 0;
+            border-radius: 6px; padding: 9px 14px; font-weight: 600; font-size: 14px;
+            cursor: pointer; margin-top: 6px;
+        }
+        .btn-primary:hover { filter: brightness(1.1); }
+        .auth-alt { color: var(--muted); font-size: 12px; margin: 18px 0 0; text-align: center; }
+        .note.bad { border-left-color: var(--bad); color: var(--bad); }
+
+        .inline-form { display: inline; }
+        .inline-form button {
+            background: none; border: 1px solid var(--line); color: var(--muted);
+            border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer;
+        }
+        .inline-form button:hover { color: var(--fg); border-color: var(--accent); }
+        .inline-form button.danger:hover { color: var(--bad); border-color: var(--bad); }
+        td.actions { white-space: nowrap; }
+        td.actions form { display: inline-block; margin-right: 4px; }
+        .checkline { display: block; padding: 4px 0; }
+        .checkline input { margin-right: 8px; }
+        .checkline.denied span { color: var(--bad); }
+        input[type="text"], input[type="email"], input[type="password"], select {
+            background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+            border-radius: 6px; padding: 5px 8px; font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+<!-- Navigation. `active` is set by the controller so the current page is obvious. -->
+<header th:fragment="header(active)">
+    <h1>AJS Observability</h1>
+    <nav>
+        <a th:href="@{/overview}" th:classappend="${active == 'overview'} ? 'active'">Overview</a>
+        <a th:href="@{/calendar}" th:classappend="${active == 'calendar'} ? 'active'">Due</a>
+        <a th:href="@{/failures}" th:classappend="${active == 'failures'} ? 'active'">Failures</a>
+        <a th:href="@{/jobs}" th:classappend="${active == 'jobs'} ? 'active'">Inventory</a>
+        <a th:href="@{/attention}" th:classappend="${active == 'attention'} ? 'active'">Needs attention</a>
+        <!-- Admin links are rendered from the DB-backed authority, so a demoted
+             admin loses these links on their next request. -->
+        <a sec:authorize="hasRole('ADMIN')" th:href="@{/admin/users}"
+           th:classappend="${active == 'admin-users'} ? 'active'">Users</a>
+        <a sec:authorize="hasRole('ADMIN')" th:href="@{/admin/apps}"
+           th:classappend="${active == 'admin-apps'} ? 'active'">Apps</a>
+    </nav>
+
+    <span class="who" sec:authorize="isAuthenticated()">
+        <span th:text="${#authentication.principal.name} ?: 'signed in'">user</span>
+        <span class="role" th:text="${#authentication.principal.role}">USER</span>
+        <form th:action="@{/auth/sign-out}" method="post">
+            <button type="submit">Sign out</button>
+        </form>
+    </span>
+</header>
+</body>
+</html>

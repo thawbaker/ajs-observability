@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Needs attention')}"></head>
+<body>
+<header th:replace="~{layout :: header('attention')}"></header>
+<main>
+    <h2>Held jobs</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        Jobs with <code>JMSTS = '*HELD'</code>. These will not be submitted until
+        released. Held is not an error state, but a job held for longer than
+        expected usually is.
+    </p>
+
+    <table th:if="${!held.isEmpty()}">
+        <thead>
+        <tr>
+            <th>Job</th>
+            <th>Application</th>
+            <th>Description</th>
+            <th>Next run</th>
+            <th>Last run</th>
+            <th class="mono">User</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="job : ${held}">
+            <td class="mono"><a th:href="@{'/jobs/' + ${job.jobName()}}" th:text="${job.jobName()}">JOB</a></td>
+            <td th:text="${job.applicationGroup()}">APP</td>
+            <td th:text="${job.description()}">desc</td>
+            <td th:text="${job.nextRunDateDisplay()}">date</td>
+            <td th:text="${job.lastRunDateDisplay()}">date</td>
+            <td class="mono" th:text="${job.runAsUser()}">user</td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="empty" th:if="${held.isEmpty()}">Nothing is held.</p>
+
+    <h2>Never run</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        Jobs with <code>JMLRD = 0</code> — created but with no recorded run. A
+        newly added job is normal here; an old one is not.
+    </p>
+
+    <table th:if="${!neverRun.isEmpty()}">
+        <thead>
+        <tr>
+            <th>Job</th>
+            <th>Application</th>
+            <th>Description</th>
+            <th>Status</th>
+            <th>Next run</th>
+            <th class="mono">User</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="job : ${neverRun}">
+            <td class="mono"><a th:href="@{'/jobs/' + ${job.jobName()}}" th:text="${job.jobName()}">JOB</a></td>
+            <td th:text="${job.applicationGroup()}">APP</td>
+            <td th:text="${job.description()}">desc</td>
+            <td>
+                <span class="tag" th:classappend="${job.held()} ? 'warn' : 'ok'"
+                      th:text="${job.status()}">*READY</span>
+            </td>
+            <td th:text="${job.nextRunDateDisplay()}">date</td>
+            <td class="mono" th:text="${job.runAsUser()}">user</td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="empty" th:if="${neverRun.isEmpty()}">Every job has run at least once.</p>
+</main>
+</body>
+</html>

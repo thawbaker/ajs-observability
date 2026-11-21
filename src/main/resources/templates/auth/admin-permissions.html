@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Permissions')}"></head>
+<body>
+<header th:replace="~{layout :: header('admin-users')}"></header>
+<main>
+    <h2>
+        Permissions for
+        <span class="mono" th:text="${user.email()}">email</span>
+    </h2>
+
+    <!--
+      The direction of this checkbox is the single easiest thing to get wrong in
+      this page. A CHECKED box means DENIED. The wording, colour and helper text
+      all reinforce it.
+    -->
+    <div class="note">
+        <strong>Checked means DENIED.</strong>
+        This is a denylist: by default a user can see every enabled app. Tick an
+        app to remove it from this user's access.
+    </div>
+
+    <form method="post" th:action="@{'/admin/users/' + ${user.id()} + '/permissions'}">
+        <table>
+            <thead>
+            <tr>
+                <th style="width: 90px;">Denied</th>
+                <th>Application</th>
+                <th>Slug</th>
+                <th>Enabled</th>
+                <th>Effect</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="app : ${apps}">
+                <td>
+                    <input type="checkbox" name="blocked" th:value="${app.id()}"
+                           th:checked="${denied.contains(app.id())}"/>
+                </td>
+                <td th:text="${app.name()}">App</td>
+                <td class="mono" th:text="${app.slug()}">slug</td>
+                <td>
+                    <span class="tag" th:classappend="${app.enabled()} ? 'ok' : ''"
+                          th:text="${app.enabled()} ? 'yes' : 'no'">yes</span>
+                </td>
+                <td>
+                    <!-- Reflects the CURRENT stored state, not the pending edit. -->
+                    <span class="tag" th:classappend="${denied.contains(app.id())} ? 'bad' : 'ok'"
+                          th:text="${denied.contains(app.id())} ? 'no access' : 'can access'">can access</span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+
+        <button type="submit" class="btn-primary" style="width: auto;">Save permissions</button>        <a th:href="@{/admin/users}" style="margin-left: 14px;">Cancel</a>
+    </form>
+
+    <h2 style="margin-top: 32px;">Effective access</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        What this user can actually open, after the denylist is applied.
+    </p>
+    <p th:if="${accessible.isEmpty()}" class="empty">
+        No accessible applications.
+    </p>
+    <ul th:if="${!accessible.isEmpty()}">
+        <li th:each="app : ${accessible}" th:text="${app.name()}">App</li>
+    </ul>
+
+    <p style="margin-top: 24px;"><a th:href="@{/admin/users}">← Back to users</a></p>
+</main>
+</body>
+</html>

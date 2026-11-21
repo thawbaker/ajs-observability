@@ -1,0 +1,52 @@
+# ============================================================================
+# Test profile -- no IBM i, no Docker, no network.
+#
+# This is the mechanism that satisfies req.txt §6: "Automated tests with a
+# mock/recorded result set; no dependence on live i."
+#
+# Because the jt400 driver only accepts jdbc:as400: URLs (verified), we cannot
+# simply point the app at H2 and still exercise jt400. Instead the tests replace
+# the entire AJS datasource with H2 in DB2 compatibility mode and drive the same
+# AjsRepository SQL. That validates SQL shape, mapping, decoding, controllers and
+# templates. What it cannot validate is listed in NOTES.md.
+#
+# The auth store gets its own throwaway SQLite file per test run, so tests never
+# touch (or depend on) a developer's real data/auth.db.
+# ============================================================================
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:ajs;MODE=DB2;DATABASE_TO_UPPER=true;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+      # Shared with the `local` profile so the offline fixture has exactly one
+      # definition. Lives in src/main/resources/fixture so `bootRun` can see it;
+      # it is never applied unless one of the offline profiles is active.
+      schema-locations: classpath:fixture/schema-ajs.sql
+      data-locations: classpath:fixture/data-ajs.sql
+  thymeleaf:
+    cache: false
+
+ajs:
+  schema-validation:
+    enabled: false
+
+auth:
+  database:
+    # A file rather than :memory: because the connection pool opens more than
+    # one connection; separate in-memory connections would each get their own
+    # empty database. Deleted and recreated by the test setup so runs are
+    # independent.
+    path: ${java.io.tmpdir}/ajs-auth-test.db
+  jwt:
+    # Fixed and >= 32 bytes so it satisfies JwtService's minimum without needing
+    # an environment variable. Test-only; never used outside the test profile.
+    secret: test-only-secret-key-that-is-definitely-long-enough-32b
+  bootstrap:
+    # Tests create exactly the users they need, so the bootstrap admin would
+    # only add an unpredictable row to every "count users" assertion.
+    enabled: false

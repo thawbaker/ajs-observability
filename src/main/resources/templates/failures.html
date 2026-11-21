@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Failures')}"></head>
+<body>
+<header th:replace="~{layout :: header('failures')}"></header>
+<main>
+    <h2>Genuine failures</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        Jobs whose last run ended abnormally (<code>JMLCC = 'A'</code>), excluding
+        those whose recovery action means they were skipped rather than failed.
+    </p>
+
+    <table th:if="${!failures.isEmpty()}">
+        <thead>
+        <tr>
+            <th>Job</th>
+            <th>Application</th>
+            <th>Description</th>
+            <th>Last run</th>
+            <th>Status text</th>
+            <th>Elapsed</th>
+            <th>User</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="job : ${failures}">
+            <td class="mono"><a th:href="@{'/jobs/' + ${job.jobName()}}" th:text="${job.jobName()}">JOB</a></td>
+            <td th:text="${job.applicationGroup()}">APP</td>
+            <td th:text="${job.description()}">desc</td>
+            <td th:text="${job.lastRunDateDisplay()}">date</td>
+            <td><span class="tag bad" th:text="${job.lastRunStatus()}">status</span></td>
+            <td th:text="${job.lastElapsedSeconds() != null ? job.lastElapsedSeconds() + 's' : '—'}">—</td>
+            <td class="mono" th:text="${job.runAsUser()}">user</td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="empty" th:if="${failures.isEmpty()}">No genuine failures. </p>
+
+    <h2>Skipped, not failed</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        Abnormal completions with recovery action <code>*NOSBM</code>. AJS did not
+        submit these — typically because the system was unavailable. They are
+        listed for transparency but are not alerts.
+    </p>
+
+    <table th:if="${!skipped.isEmpty()}">
+        <thead>
+        <tr>
+            <th>Job</th>
+            <th>Application</th>
+            <th>Recovery</th>
+            <th>Last run</th>
+            <th>Status text</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="job : ${skipped}" class="dim">
+            <td class="mono"><a th:href="@{'/jobs/' + ${job.jobName()}}" th:text="${job.jobName()}">JOB</a></td>
+            <td th:text="${job.applicationGroup()}">APP</td>
+            <td><span class="tag warn" th:text="${job.recoveryAction()}">*NOSBM</span></td>
+            <td th:text="${job.lastRunDateDisplay()}">date</td>
+            <td th:text="${job.lastRunStatus()}">status</td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="empty" th:if="${skipped.isEmpty()}">Nothing was skipped. </p>
+</main>
+</body>
+</html>

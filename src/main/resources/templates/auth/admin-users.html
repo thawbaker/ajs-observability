@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Users')}"></head>
+<body>
+<header th:replace="~{layout :: header('admin-users')}"></header>
+<main>
+    <h2>Users</h2>
+
+    <div class="note bad" th:if="${param.error}" th:text="${param.error[0]}">error</div>
+
+    <!--
+      The denylist is explained on the page, not just in code: an administrator
+      seeing "0 denied" must understand that means FULL access, not no access.
+    -->
+    <p style="color: var(--muted); font-size: 13px;">
+        Permissions use a <strong>denylist</strong>. A user with
+        <strong>0 denied</strong> of <span th:text="${totalApps}">0</span> apps has
+        full access. Newly added apps are granted automatically.
+    </p>
+
+    <table>
+        <thead>
+        <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Denied</th>
+            <th>Created</th>
+            <th>Actions</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="u : ${users}" th:classappend="${u.disabled()} ? 'dim'">
+            <td th:text="${u.name()}">Name</td>
+            <td class="mono" th:text="${u.email()}">email</td>
+            <td>
+                <form class="inline-form" method="post"
+                      th:action="@{'/admin/users/' + ${u.id()} + '/role'}">
+                    <select name="role" onchange="this.form.submit()">
+                        <option value="user" th:selected="${!u.isAdmin()}">user</option>
+                        <option value="admin" th:selected="${u.isAdmin()}">admin</option>
+                    </select>
+                    <noscript><button type="submit">Set</button></noscript>
+                </form>
+            </td>
+            <td>
+                <span class="tag" th:classappend="${u.disabled()} ? 'bad' : 'ok'"
+                      th:text="${u.disabled()} ? 'disabled' : 'active'">active</span>
+            </td>
+            <td>
+                <a th:href="@{'/admin/users/' + ${u.id()} + '/permissions'}"
+                   th:text="${deniedCounts.get(u.id())} + ' / ' + ${totalApps}">0 / 0</a>
+            </td>
+            <td class="mono" th:text="${u.createdAt()}">date</td>
+            <td class="actions">
+                <form method="post" th:action="@{'/admin/users/' + ${u.id()} + '/disabled'}">
+                    <input type="hidden" name="disabled" th:value="${!u.disabled()}"/>
+                    <button type="submit" th:text="${u.disabled()} ? 'Enable' : 'Disable'">Disable</button>
+                </form>
+                <form method="post" th:action="@{'/admin/users/' + ${u.id()} + '/delete'}"
+                      onsubmit="return confirm('Delete this user permanently?');">
+                    <button type="submit" class="danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+    <h2>Add user</h2>
+    <form method="post" th:action="@{/admin/users/create}"
+          style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+        <label class="field" style="margin: 0;">
+            <span>Name</span>
+            <input type="text" name="name" required/>
+        </label>
+        <label class="field" style="margin: 0;">
+            <span>Email</span>
+            <input type="email" name="email" required/>
+        </label>
+        <label class="field" style="margin: 0;">
+            <span>Password</span>
+            <input type="password" name="password" required minlength="8"/>
+        </label>
+        <label class="field" style="margin: 0;">
+            <span>Role</span>
+            <select name="role">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+            </select>
+        </label>
+        <button type="submit" class="btn-primary" style="width: auto;">Add</button>
+    </form>
+</main>
+</body>
+</html>

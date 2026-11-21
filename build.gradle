@@ -1,0 +1,110 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.16'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.example'
+version = '0.1.0-SNAPSHOT'
+description = 'AJS Observability — read-only observability layer for IBM i Advanced Job Scheduler'
+
+// Pin to Java 21 LTS. The dev JDK here is 27, but Spring Boot 3.5 and the
+// jt400 artifact are certified against LTS. Never let the local JDK leak into
+// the build target — this is a classic "works on my machine" deployment bug.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+// A configuration that exists only to carry H2 for local runs, so that
+// ./gradlew bootRun --args='--spring.profiles.active=local' works while the
+// production bootJar stays free of the H2 driver. Declared before `dependencies`
+// because the dependency handler needs the configuration to already exist.
+configurations {
+    localRuntimeOnly
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // ---------------------------------------------------------------------
+    // Authentication and administration store.
+    //
+    // A separate SQLite database, NOT the IBM i. Rationale: users, roles and
+    // per-app permissions are properties of this deployment, not of the
+    // scheduler being observed. Keeping them local means the app can
+    // authenticate, serve sign-in pages and be administered even when the
+    // IBM i is unreachable -- which is the whole point of a monitoring tool,
+    // and directly supports the graceful-degradation requirement in req.txt §6.
+    // It also avoids write access to the IBM i, which req.txt §9 question 1
+    // keeps out of scope.
+    //
+    // Ported from ../my-dashboard (Next.js + better-sqlite3), whose schema and
+    // auth semantics this deliberately mirrors.
+    // ---------------------------------------------------------------------
+    implementation 'org.xerial:sqlite-jdbc:3.54.1.0'
+
+    // Spring Security for the filter chain and PasswordEncoder. bcrypt comes
+    // from spring-security-crypto, same $2a$10$ algorithm my-dashboard uses via
+    // bcryptjs, so password hashes are cross-compatible between the two apps.
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.thymeleaf.extras:thymeleaf-extras-springsecurity6'
+
+    // JWT (HS256). api is compile-time, impl/jackson are runtime-only, which is
+    // the layout jjwt documents.
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+
+    // jt400 / JTOpen — the IBM Toolbox for Java. Provides both:
+    //   - com.ibm.as400.access.AS400JDBCDriver  (used: jdbc:as400://)
+    //   - AS400 / CommandCall / ProgramCall     (Option B fallback, unused)
+    // Pure Java, no native libs, container-friendly.
+    implementation 'net.sf.jt400:jt400:21.0.7'
+
+    // H2 in DB2 compatibility mode: the offline stand-in for QUSRIJS so the
+    // whole app is testable with no IBM i. Test scope only — never shipped in a
+    // production artifact.
+    testImplementation 'com.h2database:h2:2.3.232'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // Provides SecurityMockMvcRequestPostProcessors.user(), needed to exercise
+    // authenticated routes in MockMvc without minting a real JWT cookie.
+    testImplementation 'org.springframework.security:spring-security-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // H2 for the `local` profile, which runs the real application (real Tomcat,
+    // real Thymeleaf) against the fabricated fixture. Kept out of
+    // `implementation` so H2 is absent from the production jar; the `local`
+    // profile must never run there, and FixtureProfileGuard enforces that.
+    localRuntimeOnly 'com.h2database:h2:2.3.232'
+}
+
+tasks.named('bootRun') {
+    // Make the local profile ergonomic: H2 on the classpath and the fixture
+    // opt-in set, so day-to-day UI work is a single command. The guard still
+    // refuses to start if the profile is used without this opt-in elsewhere.
+    classpath = sourceSets.main.runtimeClasspath + configurations.localRuntimeOnly
+    environment 'AJS_ALLOW_FIXTURE_PROFILES', 'true'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // Tests run the 'test' profile, which loads fabricated AJS data. The
+    // FixtureProfileGuard deliberately denies that by default, so opt in
+    // explicitly here. This is the only place the opt-in belongs — never in
+    // application.yml, where it could reach a deployed environment.
+    environment 'AJS_ALLOW_FIXTURE_PROFILES', 'true'
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+    }
+}

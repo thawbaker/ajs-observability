@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Overview')}"></head>
+<body>
+<header th:replace="~{layout :: header('overview')}"></header>
+<main>
+    <h2>Overview</h2>
+
+    <div class="cards">
+        <div class="card">
+            <div class="n" th:text="${overview.totalJobs}">0</div>
+            <div class="l">Job definitions</div>
+        </div>
+        <div class="card ok">
+            <div class="n" th:text="${overview.ready}">0</div>
+            <div class="l">Ready (*READY)</div>
+        </div>
+        <div class="card warn">
+            <div class="n" th:text="${overview.held}">0</div>
+            <div class="l">Held (*HELD)</div>
+        </div>
+        <div class="card">
+            <div class="n" th:text="${overview.dueToday}">0</div>
+            <div class="l">Due today</div>
+        </div>
+        <div class="card" th:classappend="${overview.genuineFailures > 0} ? 'bad'">
+            <div class="n" th:text="${overview.genuineFailures}">0</div>
+            <div class="l">Genuine failures</div>
+        </div>
+        <div class="card">
+            <div class="n" th:text="${overview.neverRun}">0</div>
+            <div class="l">Never run</div>
+        </div>
+        <div class="card">
+            <div class="n" th:text="${overview.unscheduled}">0</div>
+            <div class="l">No next run</div>
+        </div>
+    </div>
+
+    <!--
+      Explains why the failure count may differ from a raw JMLCC='A' query.
+      Hiding this distinction would be the fastest way to lose operator trust.
+    -->
+    <div class="note" th:if="${overview.skippedNotFailed > 0}">
+        <strong th:text="${overview.skippedNotFailed}">0</strong>
+        abnormal completion(s) are <em>not</em> counted as failures: their recovery
+        action is <code>*NOSBM</code>, meaning AJS skipped them rather than the job
+        failing. See the
+        <a th:href="@{/failures}">Failures</a> page for the full breakdown.
+    </div>
+
+    <p style="color: var(--muted); font-size: 13px;">
+        Reading QUSRIJS over the jt400 JDBC driver. Read-only: no job may be held,
+        released or submitted from this application.
+    </p>
+</main>
+</body>
+</html>

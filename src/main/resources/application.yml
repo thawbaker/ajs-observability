@@ -1,0 +1,103 @@
+# ============================================================================
+# Production configuration — connects to a real IBM i over the jt400 driver.
+#
+# The datasource URL and credentials are placeholders. Per req.txt §6:
+#   - the IBM i profile must be READ-ONLY (no *ALLOBJ, no *JOBCTL),
+#   - credentials come from the environment / a secrets manager, never git.
+# Environment variables IBMI_USER / IBMI_PASSWORD are the interim mechanism;
+# replace with Vault or the cloud secret store before production.
+# ============================================================================
+
+spring:
+  application:
+    name: ajs-observability
+
+  datasource:
+    # jdbc:as400: is the ONLY URL scheme the jt400 driver accepts — verified.
+    #  - naming=system        : IBM i *SYS naming, so QUSRIJS.FILE resolves
+    #  - libraries=QUSRIJS    : default library for unqualified names
+    #  - translate binary=true: required to read some AJS packed fields safely
+    #  - prompt=false         : never block on an interactive prompt server-side
+    #  - errors=full          : full SQLCA detail in exceptions, needed to
+    #                           diagnose SQL0181/CPD4019 (risk R2)
+    url: ${IBMI_JDBC_URL:jdbc:as400://ibmi-host/QUSRIJS;naming=system;libraries=QUSRIJS;translate binary=true;prompt=false;errors=full;read only=true}
+    username: ${IBMI_USER:CHANGEME}
+    password: ${IBMI_PASSWORD:CHANGEME}
+    driver-class-name: com.ibm.as400.access.AS400JDBCDriver
+    hikari:
+      # req.txt §6: the DB2 for i host server has job limits. Keep this small;
+      # a monitoring app must not be the reason the partition runs out of jobs.
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 10000
+      pool-name: ajs-ibmi-pool
+
+  thymeleaf:
+    cache: true
+
+server:
+  port: 8080
+  error:
+    include-message: always
+  servlet:
+    session:
+      cookie:
+        # Sessions are stateless (JWT in its own cookie), but Tomcat may still
+        # set a session cookie; hardening it costs nothing.
+        http-only: true
+        same-site: lax
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # "observability of the observer" — req.txt §6.
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+ajs:
+  # Polling cadence from req.txt §6. Deliberately conservative: aggressive
+  # polling consumes IBM i jobs and CPU (risk R6).
+  polling:
+    inventory-seconds: 900
+    live-seconds: 60
+  # Fail loudly at startup if QUSRIJS does not look the way we expect (risk R1).
+  schema-validation:
+    enabled: true
+    fail-on-missing-columns: false
+
+# ============================================================================
+# Authentication and administration store (SQLite), separate from the IBM i.
+# See SqliteDataSourceConfig for why there are two datasources.
+# ============================================================================
+auth:
+  database:
+    # Created automatically, along with its parent directory, if missing.
+    # In a container, mount a volume here or the user list resets on redeploy.
+    path: ${AUTH_DATABASE_PATH:./data/auth.db}
+
+  jwt:
+    # MUST be overridden in every real deployment. There is no usable default:
+    # JwtService refuses to start on a blank or shorter-than-32-byte secret,
+    # because a guessable secret makes every session token forgeable.
+    #
+    #   export JWT_SECRET=$(openssl rand -base64 48)
+    #
+    # Replace with a secrets manager (Vault / cloud secret store) before
+    # production, per req.txt §6.
+    secret: ${JWT_SECRET:}
+
+  bootstrap:
+    # Creates the first administrator and registers the built-in dashboards.
+    # Idempotent, and a no-op once any enabled admin exists.
+    enabled: true
+    admin-email: ${AUTH_BOOTSTRAP_ADMIN_EMAIL:admin@localhost}
+    # Leave blank to have a random password generated and logged once at WARN.
+    # Never commit a real value here.
+    admin-password: ${AUTH_BOOTSTRAP_ADMIN_PASSWORD:}
+
+logging:
+  level:
+    com.example.ajs: INFO

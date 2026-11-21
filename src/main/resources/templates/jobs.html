@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Inventory')}"></head>
+<body>
+<header th:replace="~{layout :: header('jobs')}"></header>
+<main>
+    <h2>Job inventory</h2>
+    <p style="color: var(--muted); font-size: 13px;">
+        Every AJS job definition visible to this account, grouped by application
+        group. This is the least volatile view and is a candidate for caching, so
+        the IBM i is not polled harder than necessary.
+    </p>
+
+    <div th:each="entry : ${groups}">
+        <h2 th:text="${entry.key}">GROUP</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>Job</th>
+                <th class="mono">Seq</th>
+                <th>Description</th>
+                <th>Status</th>
+                <th>Next run</th>
+                <th>Last run</th>
+                <th>Last result</th>
+                <th class="mono">Queue</th>
+                <th class="mono">User</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="job : ${entry.value}" th:classappend="${job.held()} ? 'dim'">
+                <td class="mono"><a th:href="@{'/jobs/' + ${job.jobName()}}" th:text="${job.jobName()}">JOB</a></td>
+                <td class="mono" th:text="${job.sequence()}">1</td>
+                <td th:text="${job.description()}">desc</td>
+                <td>
+                    <span class="tag" th:classappend="${job.held()} ? 'warn' : 'ok'"
+                          th:text="${job.status()}">*READY</span>
+                </td>
+                <td th:text="${job.nextRunDateDisplay()}">date</td>
+                <td th:text="${job.lastRunDateDisplay()}">date</td>
+                <td>
+                    <span class="tag"
+                          th:classappend="${job.genuineFailure()} ? 'bad' : (${job.lastOutcome().name() == 'NORMAL'} ? 'ok' : '')"
+                          th:text="${job.lastOutcome().name()}">UNKNOWN</span>
+                </td>
+                <td class="mono" th:text="${job.jobQueue()}">QBATCH</td>
+                <td class="mono" th:text="${job.runAsUser()}">user</td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p class="empty" th:if="${groups.isEmpty()}">No AJS jobs visible to this account.</p>
+</main>
+</body>
+</html>

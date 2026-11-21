@@ -1,0 +1,14 @@
+build/
+.gradle/
+*.log
+.idea/
+*.iml
+
+# Local SQLite auth store — never commit real user data or password hashes.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Docs tooling dependencies (nodes are installed per-machine).
+docs/tools/node_modules/

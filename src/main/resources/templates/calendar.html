@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Due')}"></head>
+<body>
+<header th:replace="~{layout :: header('calendar')}"></header>
+<main>
+    <h2>Jobs due <span th:text="${targetDate}">date</span></h2>
+
+    <div class="note" th:if="${warning != null}" th:text="${warning}">warning</div>
+
+    <form method="get" th:action="@{/calendar}" style="margin-bottom: 20px;">
+        <label style="color: var(--muted); font-size: 12px;">
+            Date
+            <input type="date" name="date" th:value="${targetDate}"
+                   style="background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+                          border-radius: 6px; padding: 5px 8px; margin-left: 8px;"/>
+        </label>
+        <button type="submit"
+                style="background: var(--accent); color: #06121f; border: 0; border-radius: 6px;
+                       padding: 6px 14px; margin-left: 8px; font-weight: 600; cursor: pointer;">
+            Show
+        </button>
+    </form>
+
+    <table th:if="${!jobs.isEmpty()}">
+        <thead>
+        <tr>
+            <th>Job</th>
+            <th class="mono">Group</th>
+            <th>Application</th>
+            <th>Description</th>
+            <th class="mono">Time</th>
+            <th>Schedule</th>
+            <th>Last run</th>
+            <th>Last result</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="job : ${jobs}">
+            <td class="mono"><a th:href="@{'/jobs/' + ${job.jobName()}}" th:text="${job.jobName()}">JOB</a></td>
+            <td class="mono" th:text="${job.jobGroup()}">grp</td>
+            <td th:text="${job.applicationGroup()}">APP</td>
+            <td th:text="${job.description()}">desc</td>
+            <td class="mono"
+                th:text="${job.nextRunTime().isPresent()} ? ${job.nextRunTime().get()} : '—'">--:--:--</td>
+            <td th:text="${job.scheduleName()}">sched</td>
+            <td th:text="${job.lastRunDateDisplay()}">date</td>
+            <td>
+                <span class="tag"
+                      th:classappend="${job.lastOutcome().name() == 'ABNORMAL'} ? 'bad' : (${job.lastOutcome().name() == 'NORMAL'} ? 'ok' : '')"
+                      th:text="${job.lastOutcome().name()}">UNKNOWN</span>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="empty" th:if="${jobs.isEmpty()}">
+        No <code>*READY</code> jobs are scheduled for this date.
+    </p>
+</main>
+</body>
+</html>

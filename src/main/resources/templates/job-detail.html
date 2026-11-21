@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Job detail')}"></head>
+<body>
+<header th:replace="~{layout :: header('jobs')}"></header>
+<main>
+    <h2>
+        Job <span class="mono" th:text="${job.jobName()}">JOB</span>
+        <span class="tag" th:classappend="${job.held()} ? 'warn' : 'ok'"
+              th:text="${job.status()}" style="margin-left: 8px;">*READY</span>
+    </h2>
+
+    <dl class="kv">
+        <dt>Description</dt>          <dd th:text="${job.description()}">—</dd>
+        <dt>Application group</dt>    <dd th:text="${job.applicationGroup() != null ? job.applicationGroup() : '—'}">—</dd>
+        <dt>Job group</dt>            <dd th:text="${job.jobGroup() != null ? job.jobGroup() : '—'}">—</dd>
+        <dt>Sequence</dt>             <dd th:text="${job.sequence()}">1</dd>
+
+        <dt>Schedule</dt>             <dd th:text="${job.scheduleName() != null ? job.scheduleName() : '—'}">—</dd>
+        <dt>Schedule code</dt>        <dd class="mono" th:text="${job.scheduleCode() != null ? job.scheduleCode() : '—'}">—</dd>
+        <dt>Calendar</dt>             <dd th:text="${job.calendar() != null ? job.calendar() : '—'}">—</dd>
+        <dt>Holiday / fiscal</dt>     <dd th:text="${(job.holidayCalendar() != null ? job.holidayCalendar() : '—') + ' / ' + (job.fiscalCalendar() != null ? job.fiscalCalendar() : '—')}">—</dd>
+
+        <dt>Next run</dt>
+        <dd>
+            <span th:text="${job.nextRunDateDisplay()}">—</span>
+            <span th:if="${job.nextRunTime().isPresent()}"> at <span th:text="${job.nextRunTime().get()}">--:--</span></span>
+            <em th:if="${job.nextRunDate().isEmpty()}" style="color: var(--muted);">(JMDTE sentinel 9999999 — not scheduled)</em>
+        </dd>
+
+        <dt>Last run</dt>
+        <dd>
+            <span th:text="${job.lastRunDateDisplay()}">—</span>
+            <em th:if="${job.lastRunDate().isEmpty()}" style="color: var(--muted);">(JMLRD = 0 — has never run)</em>
+        </dd>
+        <dt>Last status</dt>          <dd th:text="${job.lastRunStatus() != null && !job.lastRunStatus().isEmpty() ? job.lastRunStatus() : '—'}">—</dd>
+        <dt>Last outcome</dt>
+        <dd>
+            <span class="tag"
+                  th:classappend="${job.genuineFailure()} ? 'bad' : (${job.lastOutcome().name() == 'NORMAL'} ? 'ok' : '')"
+                  th:text="${job.lastOutcome().name()}">UNKNOWN</span>
+        </dd>
+        <dt>Last elapsed</dt>         <dd th:text="${job.lastElapsedSeconds() != null ? job.lastElapsedSeconds() + ' seconds' : '—'}">—</dd>
+
+        <dt>Job queue</dt>            <dd class="mono" th:text="${(job.jobQueue() != null ? job.jobQueue() : '—') + ' / ' + (job.jobQueueLibrary() != null ? job.jobQueueLibrary() : '—')}">—</dd>
+        <dt>Job description</dt>      <dd class="mono" th:text="${(job.jobDescription() != null ? job.jobDescription() : '—') + ' / ' + (job.jobDescriptionLib() != null ? job.jobDescriptionLib() : '—')}">—</dd>
+        <dt>Runs as user</dt>         <dd class="mono" th:text="${job.runAsUser() != null ? job.runAsUser() : '—'}">—</dd>
+        <dt>Message queue</dt>        <dd class="mono" th:text="${(job.messageQueue() != null ? job.messageQueue() : '—') + ' / ' + (job.messageQueueLib() != null ? job.messageQueueLib() : '—')}">—</dd>
+        <dt>Recovery action</dt>      <dd class="mono" th:text="${job.recoveryAction() != null ? job.recoveryAction() : '—'}">—</dd>
+    </dl>
+
+    <div class="note" th:if="${job.skippedRatherThanFailed()}">
+        Recovery action is <code>*NOSBM</code>. If this job's last run shows as
+        abnormal, AJS most likely skipped it (for example the system was down)
+        rather than the job itself failing. It is not counted as a failure.
+    </div>
+
+    <h2>Command list (QAIJS1CM)</h2>
+    <div th:if="${!commands.isEmpty()}">
+        <pre th:each="cmd : ${commands}" th:text="${cmd}">CALL PGM(...)</pre>
+    </div>
+    <p class="empty" th:if="${commands.isEmpty()}">
+        No commands recorded in <code>QAIJS1CM</code> for this job and sequence.
+    </p>
+
+    <p style="margin-top: 24px;">
+        <a th:href="@{/jobs}">← Back to inventory</a>
+    </p>
+</main>
+</body>
+</html>

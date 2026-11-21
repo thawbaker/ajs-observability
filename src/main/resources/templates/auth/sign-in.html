@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Sign in')}"></head>
+<body>
+<!--
+  Standalone page: no main navigation, because everything behind it requires a
+  session. Signing out is a POST form, not a link, so a prefetch or crawler
+  cannot log a user out.
+-->
+<div class="auth-wrap">
+    <div class="auth-card">
+        <h1>AJS Observability</h1>
+        <p class="auth-sub">IBM i Advanced Job Scheduler · sign in to continue</p>
+
+        <div class="note bad" th:if="${error}" th:text="${error}">error</div>
+
+        <form method="post" th:action="@{/auth/sign-in}">
+            <label class="field">
+                <span>Email</span>
+                <input type="email" name="email" th:value="${email}" required autofocus
+                       autocomplete="username"/>
+            </label>
+            <label class="field">
+                <span>Password</span>
+                <input type="password" name="password" required autocomplete="current-password"/>
+            </label>
+            <button type="submit" class="btn-primary">Sign in</button>
+        </form>
+
+        <p class="auth-alt">
+            No account? <a th:href="@{/sign-up}">Create one</a>
+        </p>
+    </div>
+</div>
+</body>
+</html>

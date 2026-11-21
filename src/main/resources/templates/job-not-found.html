@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{layout :: head('Not found')}"></head>
+<body>
+<header th:replace="~{layout :: header('jobs')}"></header>
+<main>
+    <h2>Job not found</h2>
+    <p style="color: var(--muted);">
+        No AJS job named <span class="mono" th:text="${jobName}">JOB</span> is
+        visible to this account. Either the name is wrong, or the service profile
+        lacks authority to see it.
+    </p>
+    <p><a th:href="@{/jobs}">← Back to inventory</a></p>
+</main>
+</body>
+</html>

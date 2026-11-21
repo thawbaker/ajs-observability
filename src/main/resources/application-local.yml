@@ -1,0 +1,67 @@
+# ============================================================================
+# `local` profile — run the whole application with no IBM i present.
+#
+# Why this file is in src/main/resources and not src/test/resources:
+# `src/test/resources/application-test.yml` only exists on the test classpath, so
+# `gradlew bootRun --args='--spring.profiles.active=test'` activates the profile
+# but finds no configuration for it, silently falls back to the jt400 datasource,
+# and dies trying to resolve `ibmi-host`. That was observed, not theorised.
+#
+# This profile is the supported way to run the real application (real Tomcat,
+# real Thymeleaf, real Thymeleaf template cache settings aside) against the H2
+# fixture, for demos, UI work, and smoke-testing before a partition is available.
+#
+#   ./gradlew bootRun --args='--spring.profiles.active=local'
+#
+# It is NOT a substitute for testing against a real IBM i. See NOTES.md for the
+# list of things this cannot validate (risk R1, R2 release behaviour, R4, DRDA).
+#
+# Never enable this profile in a deployed environment: it seeds fabricated job
+# data, which must never be mistaken for real scheduler state.
+# ============================================================================
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:ajs-local;MODE=DB2;DATABASE_TO_UPPER=true;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: ajs-local-h2-pool
+      maximum-pool-size: 3
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:fixture/schema-ajs.sql
+      data-locations: classpath:fixture/data-ajs.sql
+  thymeleaf:
+    cache: false
+
+ajs:
+  schema-validation:
+    # Skipped: the fixture is authored to match the mapper by construction, so
+    # validating it would only ever test the fixture itself.
+    enabled: false
+
+auth:
+  database:
+    # Local-only SQLite file, separate from any real deployment's store.
+    path: ./data/auth-local.db
+  jwt:
+    # Fixed development secret so restarts do not invalidate the session cookie
+    # mid-workflow. Deliberately NOT secret: this profile must never be deployed,
+    # and FixtureProfileGuard refuses to start it without an explicit opt-in.
+    secret: local-development-only-secret-not-for-deployment-use-32b
+  bootstrap:
+    enabled: true
+    admin-email: admin@localhost
+    # Known password so local sign-in is not a copy-paste from the logs every
+    # time the file is deleted. Local profile only.
+    admin-password: localdev1234
+
+logging:
+  level:
+    com.example.ajs: DEBUG
+  # Make it unmistakable that this is fabricated data.
+  pattern:
+    console: "%d{HH:mm:ss} %-5level [LOCAL-FAKE-DATA] %logger{20} - %msg%n"
