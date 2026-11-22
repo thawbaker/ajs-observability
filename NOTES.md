@@ -1569,7 +1569,7 @@ What it cannot prove is a short list, and every item on it is a property of the
 | The real column set of `QAIJSMST`/`QAIJSHST`/`QAIJS1CM` | H2 is running a schema we wrote | `docs/host-capture/01-columns.sql` + `diff-against-fixture.sh` |
 | The real key of `QAIJSHST` | the fixture's key is invented | `docs/host-capture/02-keys.sql` |
 | Real `CYYMMDD`/`YYMMDD` encodings and sentinels per release | our decoder assumes a convention | `docs/host-capture/03-date-encodings.sql` |
-| That DRDA/host server works end to end | H2 is a local file | `docs/host-capture/05-drda.sql` |
+| That DRDA/host server works end to end | H2 is a local file | `docs/host-capture/05-drda.sql` — **partly answered against PUB400, see below** |
 | jt400's own type mapping (packed decimal, `CHAR` padding) | H2's `INTEGER`/`CHAR` are not DB2 for i's | real rows through the real driver |
 | Authority behaviour (`*USE`, AJS function authority) | no authority model offline | a real profile |
 | Performance on a real history file | 20 fixture rows | a real partition, or a copy |
@@ -1579,6 +1579,57 @@ timeline geometry, the permission model, CSRF, the denylist, the truncation
 honesty. Those are all app-side and are genuinely tested. The offline suite is
 not weak because it is offline; it is weak in exactly one place, and that place
 is the host's schema.
+
+### A public host: PUB400, and what it actually settles
+
+There is one free, public IBM i: **PUB400.com** (RZKH GmbH, IBM i 7.5, free
+`*PGMR` profile, 1 GB). It is worth being precise about what it does and does not
+answer here, because "just test against PUB400" is the obvious suggestion and it
+is only partly right.
+
+**What it settles — measured, not assumed.** From this machine:
+
+| Probe | Result |
+| --- | --- |
+| TCP to `pub400.com:8471` (as-database / DRDA) | **open** |
+| TCP to `pub400.com:446` (older DRDA) | open |
+| jt400 21.0.7 signon against it | completed a full DRDA exchange in ~0.8 s |
+| The rejection | `SQLState 08004`, "Password is incorrect" for the user we sent |
+
+That last row is the useful one. A firewall or network fault fails differently —
+timeout, connection refused, or a dropped socket. Getting a *protocol-level
+authentication rejection* means the driver, the port, the host server and the
+signon exchange all worked. **R5's network question is therefore answered: DRDA
+from an ordinary internet-connected machine to a real IBM i works, and the
+application's driver stack is not the problem.** That is genuinely valuable and
+cost nothing.
+
+**What it does not settle.** PUB400 is a real IBM i, but it is not *our* IBM i,
+and it almost certainly lacks the two things that matter most:
+
+- **AJS itself.** Advanced Job Scheduler is licensed program 5770-JS1 (no charge
+  on current releases, but still a licensed program that has to be installed).
+  PUB400's published description is a general-purpose playground — RPG, COBOL,
+  CL, SQL — and says nothing about AJS. Without 5770-JS1 there is no `QUSRIJS`
+  library and no `QAIJSMST`/`QAIJSHST`/`QAIJS1CM`, so **R1 cannot be retired
+  there.** That is the whole reason we care.
+- **Our authority model.** PUB400 grants `*PGMR` and explicitly refuses anything
+  higher. That cannot reproduce the read-only service profile's authority
+  behaviour (R3), which is a property of *our* profile, not of IBM i.
+
+So PUB400 is a good answer to "can this driver talk to a real host at all"
+(the answer is yes, and we now know it) and a poor answer to "what do the AJS
+files actually look like". If AJS turns out to be installed there — worth asking
+the operators, or checking `DSPSFWRSC` for `5770JS1` after signing up — then it
+becomes the best available substitute for the internal partition, and
+`docs/host-capture/` runs against it unchanged. If it is not installed, the
+internal network remains the only way to retire R1.
+
+One caveat if you do sign up: PUB400 is a shared public system. Do not run the
+capture script's sample-row queries against other users' data, and do not point
+the application at it with anything but a throwaway account. The read-only
+posture is still the right one, and a public playground is not a partition whose
+scheduler state anyone should be drawing conclusions from.
 
 ### Where more mocking would actively hurt
 
@@ -1664,7 +1715,9 @@ an assumption, and the further it goes the more expensive the eventual correctio
 becomes.
 
 If the internal network can be reached through a jump host or a VPN, the single
-highest-value thing this project can do is spend one hour there. If it cannot be
+highest-value thing this project can do is spend one hour there. If it cannot, try
+PUB400 first (§ above): it retires the DRDA question for free, and if AJS happens
+to be installed there it retires much more. If it cannot be
 reached at all, then the correct position is the one this document already
 takes: the app is a well-tested elaboration of a documented schema, it says so,
 and it should not be deployed against a partition whose layout has never been
