@@ -35,6 +35,10 @@ original requirements, including the questions that are still open.
 | **Needs attention** | `/attention` | Held and never-run jobs |
 | **Administration** | `/admin/**` | Users, apps, per-app view permissions (ADMIN only) |
 
+What it does *not* yet do, and what would be worth adding, is §12c: job logs for a
+failed run, run history on the job page, and the rest, ranked by value and by how
+much each one depends on a host nobody has reached yet.
+
 Data comes from the AJS physical files — `QAIJSMST` (definitions), `QAIJSHST`
 (run history), `QAIJS1CM` (command lists) — read over the jt400 JDBC driver.
 Nothing is installed on the IBM i; these are the same tables the 5250 panels
@@ -1725,6 +1729,168 @@ inspected.
 
 ---
 
+## 12c. Functionality worth building — recommendations, ranked
+
+Nothing below is implemented. This section exists because the obvious next
+question after §12b is "then what *would* be worth building?", and the honest
+answer is narrower than a feature list. Every item here is grounded in data the
+application already reads or in services that need no new authority — so none of
+them reopens §11's read-only decision. They are ranked by value per unit of
+guesswork, not by interest.
+
+The test each item had to pass to appear here: **does it answer an operator
+question that today requires a 5250 session, using data we can already reach?**
+Ideas that need a second privileged profile (`HLDJOBJS`, `SBMJOB`) are §11's
+argument, not this one, and are excluded.
+
+| # | Recommendation | Answers | New host dependency | Blocked by |
+| --- | --- | --- | --- | --- |
+| 1 | **View the job log for a run** | "*why* did it fail?" | `QSYS2.JOB_INFO` / `JOBLOG_INFO` | R1, authority |
+| 2 | **Run history on the job page** | "has this been getting worse?" | none — `QAIJSHST` already read | C5/C6 |
+| 3 | **Failure-to-cause link** | "show me the error, not the status" | same as #1 | #1, R1 |
+| 4 | **Saved/shareable window state on the timeline** | "send this view to a colleague" | none | none |
+| 5 | **Export a view to CSV** | "put this in a report" | none | C5/C6 |
+| 6 | **Per-job expected-runtime baseline** | "is this run unusually slow?" | none — historical `HSELAP` | data volume |
+| 7 | **Live refresh of the timeline** | "is it running *now*?" | none | C5/C6, R6 |
+| 8 | **Scheduled digest / threshold alert** | "tell me without me looking" | none | #2, and an outbound channel |
+
+**Rerun is deliberately absent.** "Rerun a job" is the one recommendation an
+operator will ask for first, and it is the one this document most firmly
+declines: rerunning is `SBMJOB`/`RLSJOBJS`, which is a **write** to production,
+needs a privileged profile, a confirmation step and an append-only audit log —
+§11's whole argument, not a convenience feature. If it is ever built it arrives
+as the separate write service §11 describes, with its own credentials, never as
+a button on `/failures`.
+
+### 1. View the job log for a run — the highest-value gap
+
+The application can tell an operator that a job ended abnormally and cannot tell
+them why. That is the single most common reason to open a 5250 session, and it is
+the gap that most reduces the app's usefulness. AJS's own files do not hold the
+job log; the IBM i does, through SQL services that are **read-only and need no
+`*JOBCTL`**:
+
+- `QSYS2.JOB_INFO` — resolve an AJS run to a system job (name, user, number,
+  qualified job name) using the job's start time and run-as profile.
+- `QSYS2.JOBLOG_INFO` — the messages for that qualified job name, in order.
+
+This is the item with the most value and the most unearned confidence, and the
+two are the same fact: it depends on **correlating an AJS `QAIJSHST` row with a
+system job**, and that correlation key is not in the authored schema. It is R1
+again, one layer deeper. Before building it, the Phase 0 session must also
+answer: *given a `QAIJSHST` row, how do we identify the system job it produced?*
+If the answer is "we cannot, reliably", the feature is not buildable as stated,
+and a "show recent messages for this job name's runs" approximation should be
+labelled as such rather than presented as the log of that run.
+
+Two design constraints, both consequences of the read-only posture:
+
+- **It must render as escaped text, never as HTML.** Job logs contain
+  operator-supplied message text and command strings. Escaping is not optional;
+  see §11's note on command-sequence injection for why this class of content is
+  treated as hostile.
+- **It must page or bound.** `JOBLOG_INFO` on a long-running job can return
+  thousands of rows. The timeline's honest-truncation discipline (§7) is the
+  precedent: bound the response and say so in the UI.
+
+### 2. Run history on the job page — the cheapest real win
+
+`/jobs/{name}` shows the last run as four scalar fields. `QAIJSHST` already holds
+every run and the repository already reads it for the timeline; the job page just
+never asks. A last-N-runs table — start, outcome, elapsed, and a link to the gap
+in the timeline — answers "is this job degrading?" and "when did it last
+succeed?" without touching a new table, a new query shape, or the host beyond
+what the timeline already reads.
+
+This is the recommendation to do first if Phase 0 is delayed, precisely because
+it adds no new schema assumption. It should fetch through the same per-request
+snapshot as the rest of the page (§4's C5/C6 work), not with a second
+`findRunsBetween` per render.
+
+### 3. Failure-to-cause link
+
+`/failures` lists abnormal completions; #1 supplies the log. The feature is
+joining them: each failure row links to its run's log, and the overview's
+"genuine failures" counter links to the rows behind it. Small, and it is what
+turns two working views into one workflow. It inherits every constraint of #1.
+
+### 4. Saved and shareable window state on the timeline
+
+The timeline already renders from URL-only state (`from`, `to`, `scale`) — that
+is stated in §13's live-updates note and it is the whole reason this is cheap.
+What is missing is the operator conveniences around it: named windows ("last
+night", "month end"), and the badge counts copied into a permalink so a pasted
+URL shows the same thing the sender saw. No query changes, no schema risk, and it
+makes the existing view reachable in the situations where it is actually used.
+
+### 5. Export a view to CSV
+
+Operators paste dashboard contents into incident reports and spreadsheets today
+by hand. A read-only CSV of the rows already on screen — failures, jobs due, a
+timeline lane set — is small, and it respects the read-only posture because it
+reads exactly what the page reads. The entity-tagging of the response matters
+(§7): a truncated export must say it is truncated, in the file, not only on
+screen. Treat the export as the same query as the view, not a second one.
+
+### 6. Per-job expected-runtime baseline
+
+"This run took 40 minutes" means nothing without "and it usually takes 6". The
+elapsed times are already in `QAIJSHST` and already decoded. A per-job median or
+p90 over the same window the timeline uses would let `/timeline` and the run
+history mark a slow run, and would eventually give the digest (#8) something
+worth alerting on. **Do not build this before the host session**: the baseline is
+only meaningful over real history, and computing it over fabricated fixture rows
+would produce a number that looks like evidence and is not. It is listed here so
+it is not reinvented as a "nice idea" later on top of a guessed schema.
+
+### 7. Live refresh of the timeline
+
+Already argued in §13, and listed here for completeness rather than as new
+advice: the mechanism is a page timer reading one cached snapshot (C5/C6), not a
+per-tab poll against DRDA (R6). The look transfers from the sssf visualizer; the
+poll target does not. The fixed-window caveat in §13 stands — a refresh must not
+move the bars under the reader.
+
+### 8. Scheduled digest or threshold alert
+
+"Tell me without me looking" is the natural endpoint, and it is the only item
+here that leaves the application. It depends on #2 and #6 for its content and on
+some outbound channel (mail, a webhook, an existing notification system) for its
+delivery — and that channel is an operational decision, not a code decision. Its
+one hard requirement is that an alert be *honest about its window*: "1 abnormal"
+from a capped or truncated scan is a true number about a limited window (§12a,
+risk 3), and an alert that omits the bound is worse than no alert, because it is
+read at face value.
+
+### What is not on this list, and why
+
+- **Rerun / hold / release / submit** — writes. §11. Not a feature, a second
+  product with a second profile.
+- **An editing UI for AJS job definitions** — §11's define discussion: ~50
+  parameters, no transactional safety, and a command-sequence field that is a
+  remote-code-execution surface on production.
+- **A REST/JSON API** — nothing consumes one yet; the server-rendered pages are
+  what makes the timeline work without JavaScript. §12a already excludes it.
+- **Multi-partition support** — undesigned, and it multiplies R1 by the number of
+  partitions while the first one is still unverified.
+- **A real-time active-job view from `ACTIVE_JOB_INFO`** — attractive, and a
+  different product: it answers "what is the system doing now", not "what did
+  the scheduler do". §12b's "what this session cannot do" applies — it is a
+  reading of live state, and it needs the host before it needs code.
+
+### The recommendation, stated plainly
+
+**Do #2 now, because it assumes nothing new. Build #1 next, but only against a
+real partition and only after the correlation key is known. Treat #4 and #5 as
+the same afternoon. Leave #6, #7 and #8 until there is real history to make them
+meaningful, and leave rerun to §11's decision.**
+
+The ordering is the point: the items that add value without adding a schema
+assumption come first, and the item everyone wants most (#1, and its cousin
+rerun) is the one that most depends on the host nobody can reach yet.
+
+---
+
 ## 13. Hand-off
 
 If you are picking this up cold, read this document in order, then `req.txt` for
@@ -1798,6 +1964,10 @@ work and the "first real partition" gate — is §12a; this is the short version
 
 `req.txt` §9 question 1 — whether write support is ever wanted — still needs a
 decision rather than an implementation; §11 argues for keeping the app read-only.
+
+What to build once Phase 0 is done, and in what order — job logs, run history per
+job, CSV export and the rest — is §12c, with the same host-dependency caveat
+applied to each recommendation.
 
 ### Live updates (asked, not yet built)
 
