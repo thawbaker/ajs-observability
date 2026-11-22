@@ -538,3 +538,41 @@ real IBM i). SQLite: **4** entries present.
 - TLS: `setSecure(false)` on the session cookie, because local HTTP. **Must be
   flipped to `true` behind HTTPS** before any real deployment, or the token is
   sent in clear text.
+
+---
+
+## Design review (added after the timeline work)
+
+A deliberate critique of this design, plus a handoff guide, is in
+[`docs/DESIGN-CRITIQUE.md`](docs/DESIGN-CRITIQUE.md). Read it before making
+structural changes or taking over the project.
+
+Summary of the findings, worst first. Each was verified against the code:
+
+| # | Issue | Severity |
+| --- | --- | --- |
+| C1 | CSRF disabled; the justifying comment was factually wrong | **High** |
+| C2 | `findRunsBetween` selects the whole `QAIJSHST` with no `WHERE` | **High** |
+| C3 | Admin mutations are not audited at all | Medium |
+| C4 | Permission denylist defaults should be asserted to fail closed | Medium |
+| C5 | Several service methods each re-read the master file | Low |
+| C6 | No caching or poller; load is proportional to page views | Low |
+| C7 | `LocalDate.now()` in service code limits testability | Low |
+
+**C1 was fixed as far as it safely can be without a design decision:** the false
+comment in `SecurityConfig` has been replaced with an accurate one naming the
+real weakness, so a reviewer can see it. The fix itself — re-enabling CSRF — is
+small (Thymeleaf's `th:action` injects the token automatically) but is a
+behaviour change that belongs to whoever owns the security posture.
+
+**C2 is the one that gets worse as the system succeeds.** `findRunsBetween`
+transfers the entire run history over DRDA on every timeline page view. The
+reason is sound — `HSDTE` is packed CYYMMDD and cannot be compared to a
+timestamp without provoking SQL0181/CPD4019 — but the conclusion does not follow:
+`HSDTE` is numerically ordered within a century, so a `BETWEEN` on decoded
+CYYMMDD integers is a valid, index-usable restriction that keeps date arithmetic
+in Java. See the critique for the detail.
+
+The critique also lists what is good and should *not* be "cleaned up", which is
+worth reading alongside the problems — several deliberate decisions here look
+redundant until you know why they exist.

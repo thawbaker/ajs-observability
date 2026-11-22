@@ -59,12 +59,23 @@ public class SecurityConfig {
                                            JwtAuthenticationFilter jwtAuthenticationFilter)
             throws Exception {
         http
-                // CSRF is disabled because the session is a cookie-authenticated
-                // stateless API and there is no HTML form POST from a browser
-                // session in the classic sense. NOTE: this is a deliberate
-                // trade-off inherited from the reference implementation, and it
-                // means state-changing requests rely on SameSite=Lax cookies for
-                // protection. If write endpoints are added later, revisit this.
+                // CSRF IS DISABLED, AND THIS IS A KNOWN WEAKNESS.
+                //
+                // An earlier version of this comment claimed there was "no HTML
+                // form POST from a browser session". That was wrong: there are ten
+                // browser form POSTs, including destructive admin actions
+                // (POST /admin/users/{id}/delete, /disabled, /role, and the app and
+                // permission forms). See DESIGN-CRITIQUE.md C1.
+                //
+                // The only thing preventing cross-site forgery of those requests is
+                // the session cookie being set SameSite=Lax in AuthController. That
+                // mitigation is load-bearing and must not be relaxed to
+                // SameSite=None without first enabling CSRF here.
+                //
+                // The fix is small and worth doing: the templates are server-rendered
+                // Thymeleaf, so th:action injects the hidden _csrf field automatically
+                // and Spring Security's default token repository works unchanged.
+                // Re-enable csrf() and remove this comment.
                 .csrf(csrf -> csrf.disable())
 
                 .sessionManagement(session ->
