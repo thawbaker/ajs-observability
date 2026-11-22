@@ -48,6 +48,11 @@ const PAGES = [
   { path: '/sign-in', name: '01-sign-in', as: 'anonymous', fullPage: false },
   { path: '/sign-up', name: '02-sign-up', as: 'anonymous', fullPage: false },
   { path: '/overview', name: '03-overview', as: 'admin', fullPage: true },
+  // The timeline is captured with a tall viewport rather than fullPage: its
+  // background is `background-attachment: fixed`, which Chromium's full-page
+  // capture does not repeat correctly, producing blown-out rows below the fold.
+  { path: '/timeline?from=2025-11-19T00:00&to=2025-11-22T00:00',
+    name: '17-timeline', as: 'admin', fullPage: false, tall: true },
   { path: '/calendar', name: '04-calendar-due', as: 'admin', fullPage: true },
   { path: '/calendar?date=2025-11-03', name: '05-calendar-a-date', as: 'admin', fullPage: true },
   { path: '/failures', name: '06-failures', as: 'admin', fullPage: true },
@@ -90,12 +95,20 @@ async function signIn(page, credentials) {
 async function ensureViewer(page, adminSession) {
   await signIn(page, ADMIN);
 
+  // CSRF is enabled (design review C1), so a raw fetch() POST is rejected with
+  // 403 unless it carries the token. The token is read from a rendered form on
+  // an admin page, exactly as a browser would supply it.
   const created = await page.evaluate(async () => {
+    const form = document.querySelector('form[action*="/admin/users/create"]')
+      || document.querySelector('form');
+    const token = form?.querySelector('input[name="_csrf"]')?.value ?? '';
+    // redirect:'manual' makes Chromium return status 0 here (the 302 is not
+    // surfaced), so follow the redirect and report the final status instead.
     const res = await fetch('/admin/users/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'email=viewer@local&password=viewerpass123&name=Viewer&role=user',
-      redirect: 'manual',
+      body: `_csrf=${encodeURIComponent(token)}&email=viewer@local&password=viewerpass123&name=Viewer&role=user`,
+      redirect: 'follow',
     });
     return res.status;
   });
@@ -103,11 +116,14 @@ async function ensureViewer(page, adminSession) {
   // redirects but with an error query parameter.
   console.log(`    viewer create -> ${created}`);
 
-  await page.goto(`${BASE}/auth/sign-out`, { waitUntil: 'networkidle0' }).catch(() => {});
-  // Sign-out is a POST, so do it properly.
-  await page.evaluate(async () => {
-    await fetch('/auth/sign-out', { method: 'POST' });
-  });
+  // Sign-out is a POST and is CSRF-protected, so click the real form's submit
+  // button and wait for the navigation in the same step. Calling form.submit()
+  // inside evaluate() navigates before the outer wait can be attached.
+  await page.goto(`${BASE}/overview`, { waitUntil: 'networkidle0' });
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle0' }),
+    page.click('form[action*="/auth/sign-out"] button[type="submit"], form[action*="/auth/sign-out"] button'),
+  ]);
 
   await signIn(page, { email: 'viewer@local', password: 'viewerpass123' });
 }
@@ -151,10 +167,18 @@ try {
 
     for (const spec of PAGES.filter((p) => p.as === 'admin')) {
       await page.goto(`${BASE}${spec.path}`, { waitUntil: 'networkidle0' });
+      // A `tall` spec grows the viewport to the document height instead of using
+      // fullPage, which is what a fixed background needs (see the timeline entry).
+      if (spec.tall) {
+        const h = await page.evaluate(() => document.documentElement.scrollHeight);
+        await page.setViewport({ ...VIEWPORT, height: Math.min(h, 3000) });
+        await new Promise((r) => setTimeout(r, 300));
+      }
       const file = join(OUT, `${spec.name}.png`);
       await page.screenshot({ path: file, fullPage: spec.fullPage });
       captured.push({ ...spec, file });
       console.log(`  admin      ${spec.path} -> ${spec.name}.png`);
+      if (spec.tall) await page.setViewport(VIEWPORT);
     }
 
     // --- ordinary user session, in a separate context ----------------------

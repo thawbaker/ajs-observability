@@ -1,18 +1,20 @@
 # Documentation tooling
 
-Generates `docs/README.pdf` — the illustrated README — from the running
-application. Nothing here is hand-assembled: the screenshots are captures of the
-real pages taken through the real sign-in flow, and the sample-run transcript
-holds real HTTP status codes and byte counts.
+Generates the screenshots in `docs/screenshots/`, which are the figures in
+`NOTES.md` §4a. Nothing here is hand-assembled: the captures are of the real
+pages, taken through the real sign-in flow.
+
+There is no generated HTML or PDF any more. The figures are embedded in
+`NOTES.md` directly, so there is exactly one document to keep in step. The
+capture-and-trim steps below are unchanged; the render step is gone.
 
 ## Prerequisites
 
 | Tool | Purpose | Present on this machine |
 |------|---------|-------------------------|
 | Node.js 20+ | runs the capture and trim scripts | 26.13.1 |
-| Chromium | drives the browser and renders the PDF | `/usr/bin/chromium` |
+| Chromium | drives the browser for the captures | `/usr/bin/chromium` |
 | ImageMagick | trims dead space from captures | `magick` |
-| poppler | `pdfinfo` / `pdfimages` / `pdftoppm` for verification | yes |
 
 Install the one npm dependency:
 
@@ -20,9 +22,9 @@ Install the one npm dependency:
 cd docs/tools && npm install
 ```
 
-## Regenerate the PDF
+## Regenerate the figures
 
-Four steps. The application must be running first, because the captures drive it
+Two steps. The application must be running first, because the captures drive it
 over real HTTP rather than mocking it.
 
 ```bash
@@ -35,45 +37,35 @@ cd ../..
 cd docs/tools
 node capture.mjs http://localhost:18090
 
-# 3. Trim dead vertical space so the figures are readable at print scale.
+# 3. Trim dead vertical space so the figures are readable at document scale.
 node trim.mjs
-
-# 4. Render the PDF. Must be the file:// URL of docs/README.html so the
-#    relative screenshot paths resolve.
-cd ..
-chromium --headless --no-sandbox --disable-gpu --hide-scrollbars \
-  --no-pdf-header-footer --virtual-time-budget=20000 \
-  --print-to-pdf=README.pdf \
-  "file://$(pwd)/README.html"
 ```
 
 ## Verify the output
 
-Do not trust the byte count alone — an early version of this pipeline produced a
-266 KB PDF that contained **none** of the screenshots, because the HTML referenced
-`../screenshots/` while the images live in `docs/screenshots/`. Chromium dropped
-all 16 silently. Always check:
+Do not trust the exit code alone. An early version of this pipeline referenced
+`../screenshots/` while the images live in `docs/screenshots/`, and the result
+was silently image-less. Run the checks from `docs/tools/`:
 
 ```bash
-pdfinfo README.pdf | grep -E "Pages|File size"      # expect ~15 pages, ~2 MB
-pdfimages -list README.pdf | awk 'NR>2 && $4>300' | wc -l   # expect 16
+# 17 files, each non-trivial in size.
+ls -1 ../screenshots/*.png | wc -l
+identify -format '%f %wx%h\n' ../screenshots/*.png
+
+# Every image referenced by NOTES.md exists.
+grep -o 'screenshots/[0-9a-z-]*\.png' ../../NOTES.md | sort -u | while read -r f; do
+  test -f "../$f" || echo "MISSING: $f"
+done
 ```
 
-If the image count is not 16, a `src` path is wrong. A PDF under ~1 MB for this
-document almost certainly means images are missing, not that it compressed well.
-
-Spot-check a page as an image:
-
-```bash
-pdftoppm -png -r 60 -f 5 -l 5 README.pdf /tmp/page
-```
+A dashboard capture that is a flat band of colour means the timeline's
+`background-attachment: fixed` hit a `fullPage` capture; see the notes below.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `../README.html` | The document source. Edit this to change wording or add figures. |
-| `../README.pdf` | Generated output. Committed so it can be read without a toolchain. |
+| `../../NOTES.md` | The document. §4a holds the figures and their captions. |
 | `../screenshots/*.png` | Generated captures at 2x scale. |
 | `capture.mjs` | Drives Chromium through sign-in and screenshots each page. |
 | `trim.mjs` | Crops the empty region below dashboard content. |
@@ -82,24 +74,35 @@ pdftoppm -png -r 60 -f 5 -l 5 README.pdf /tmp/page
 
 - **It authenticates for real.** Puppeteer submits the actual sign-in form rather
   than injecting a cookie, so the capture also exercises the login path.
-- **Admin and ordinary-user views are separate browser contexts.** Figure 16 shows
+- **Admin and ordinary-user views are separate browser contexts.** Figure 17 shows
   the same dashboard as a non-administrator, where the Users and Apps navigation
   links are absent. Capturing that in the admin session would have been wrong.
 - **Auth pages use a narrower viewport** (900x760). At 1440x900 the sign-in card
-  sits in a large empty field, which looked broken in print.
+  sits in a large empty field, which looked broken at document scale.
 - **Dashboard pages are trimmed afterwards**, not captured cropped. Page height
   varies with the amount of data, so a fixed crop would clip content on some pages
   and leave dead space on others.
+- **The timeline uses a tall viewport, not `fullPage`.** Its background is
+  `background-attachment: fixed`, which Chromium's full-page capture renders as a
+  solid band that hides everything below the fold. The `tall` flag in its `PAGES`
+  entry grows the viewport instead. Check the image, not the exit code.
+- **Raw `fetch()` POSTs need the CSRF token.** Since CSRF was enabled (design
+  review C1), the create-user and sign-out calls in the script read `_csrf` from a
+  rendered form and submit it. A token-less POST returns 403, and `redirect:
+  'manual'` surfaces that as status 0 rather than a status code.
 
 ## When pages change
 
-Adding a page or route means updating three places:
+Adding a page or route means updating four places:
 
 1. `PAGES` in `capture.mjs` — add the path and a name.
-2. `README.html` — add a `<figure>` referencing the new PNG.
+2. `NOTES.md` §4a — add the image and its caption, and renumber the figures.
 3. `AuthBootstrap.BUILT_IN_APPS` in the application, if the new page is a
    dashboard that should be individually grantable.
+4. `AppPermissionInterceptor.ROUTE_TO_SLUG` **and** `WebMvcConfig.addPathPatterns`
+   — the route must be in both or the interceptor never runs. Missing the third
+   and fourth entries is how the timeline ended up ungovernable (design review C8).
 
-The figure numbering in `README.html` is manual. If figures are inserted rather
-than appended, renumber the captions and check the cross-reference in Figure 16,
+The figure numbering in `NOTES.md` §4a is manual. If figures are inserted rather
+than appended, renumber the captions and check the cross-reference in Figure 17,
 which compares itself to Figure 3.

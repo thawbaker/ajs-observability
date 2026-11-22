@@ -9,8 +9,10 @@ ran and how long each took.
 This is the only prose document in the repository. It is written as a single
 narrative on purpose: the project's history is a sequence of decisions, and the
 order in which they were made is usually the fastest way to understand why the
-code looks the way it does. `req.txt` holds the original requirements, including
-the questions that are still open.
+code looks the way it does. It also carries the illustrated walkthrough — the
+seventeen screenshots in §4a are the evidence behind the claims made here, so
+there is no separate illustrated README to keep in step. `req.txt` holds the
+original requirements, including the questions that are still open.
 
 > **This application never writes to the IBM i.** Every query is a `SELECT`, and
 > the service profile it is designed to use has no `*JOBCTL` and no AJS function
@@ -42,30 +44,112 @@ read. No REST/JSON API is assumed from AJS, and no SPA is involved.
 
 ## 2. Running it
 
-```bash
-# Full test suite — offline, no IBM i, no Docker.
-./gradlew test
-
-# Run the real application against fabricated data (H2), for UI work and demos.
-./gradlew bootRun --args='--spring.profiles.active=local'
-#   bootstrap admin: admin@localhost / localdev1234   (local profile only)
-# then browse http://localhost:8080
-
-# Production build. H2 is NOT included; jt400 IS.
-./gradlew build
-
-# Production runs need a real secret, or JwtService refuses to start:
-export JWT_SECRET=$(openssl rand -base64 48)
-```
-
 Requires **Java 21**. `build.gradle` pins a Java 21 toolchain while this machine
 defaults to JDK 27; the `foojay-resolver-convention` settings plugin provisions
 21 automatically, so a fresh clone builds with no manual step.
 
-On a fresh database `AuthBootstrap` registers the five dashboards as applications
-and creates one administrator. If `AUTH_BOOTSTRAP_ADMIN_PASSWORD` is unset it
-generates a random password and logs it **once** at WARN — deliberately, because
-a fixed default password is how these accounts reach production unchanged.
+There are exactly two ways to run the application, and they are chosen by the
+Spring profile. The default profile talks to a real IBM i; the `local` profile
+loads the fabricated fixture and needs no host at all. Nothing else switches it.
+
+| | `local` — no IBM i | default — real IBM i |
+| --- | --- | --- |
+| AJS data | H2 in-memory, fabricated fixture | `QUSRIJS` over jt400 |
+| Command | `./gradlew bootRun --args='--spring.profiles.active=local'` | `./gradlew bootRun` |
+| Auth store | `./data/auth-local.db` | `./data/auth.db` |
+| Administrator | `admin@localhost` / `localdev1234` | `AUTH_BOOTSTRAP_ADMIN_EMAIL` / random or set password |
+| `JWT_SECRET` | fixed dev value in `application-local.yml` | **required**, or startup fails |
+| Schema validation | off (the fixture matches by construction) | on, warns on drift |
+| H2 on the classpath | yes (`localRuntimeOnly`) | no — verified absent from the jar |
+| Production jar | **must not be used** — no H2, so it cannot start | the only supported mode |
+| Schema drift on first look | — | default warns and starts; the `ibmi` profile **refuses to start** |
+
+### No IBM i: the `local` profile
+
+```bash
+./gradlew test                                    # 173 tests, offline
+./gradlew bootRun --args='--spring.profiles.active=local'
+#   bootstrap admin: admin@localhost / localdev1234
+#   browse http://localhost:8080
+```
+
+That single command is the whole setup: `bootRun` puts H2 on the classpath, sets
+`AJS_ALLOW_FIXTURE_PROFILES=true`, and the profile seeds the fixture. Run it
+*outside* Gradle and the guard refuses to start — which is the point, because a
+deployed environment must never show invented scheduler state.
+
+Two things are easy to get wrong here:
+
+- **The auth database persists.** `./data/auth-local.db` survives restarts, so
+  deleting it is how you get a clean bootstrap. It is gitignored, and it is a
+  different file from production's `./data/auth.db`.
+- **Nothing is printed to the console on the local profile.** The password is
+  fixed at `localdev1234` in `application-local.yml`; the "generated and logged
+  once" behaviour is the production path only.
+
+### Real IBM i: the default profile
+
+```bash
+export IBMI_JDBC_URL='jdbc:as400://ibmi-host/QUSRIJS;naming=system;libraries=QUSRIJS;translate binary=true;prompt=false;errors=full;read only=true'
+export IBMI_USER='AJSREAD'
+export IBMI_PASSWORD='...'
+export JWT_SECRET=$(openssl rand -base64 48)        # or startup fails
+export AUTH_BOOTSTRAP_ADMIN_PASSWORD='...'          # or read it from the WARN log once
+export AUTH_DATABASE_PATH=/var/lib/ajs/auth.db      # or ./data/auth.db
+
+./gradlew bootRun            # development
+./gradlew build && java -jar build/libs/*.jar   # or the jar, in deployment
+```
+
+**The first connection to a partition should use the `ibmi` profile**, not the
+default one:
+
+```bash
+export JWT_SECRET=$(openssl rand -base64 48)   # the gate still needs one
+./gradlew bootRun --args='--spring.profiles.active=ibmi'
+```
+
+`ibmi` sets `ajs.schema-validation.fail-on-missing-columns=true`, so a schema
+mismatch is a failed start with a precise list of missing columns rather than a
+dashboard that renders empty. The default profile warns and starts — right for a
+host you have already inspected, wrong for the first look. Verified both ways:
+with no host reachable, `ibmi` exits with `AJS schema drift detected ...
+QAIJSMST unreadable (The application requester cannot establish the connection.
+(ibmi-host))`.
+
+Every value above has a default in `application.yml`; only `JWT_SECRET` has no
+usable one. The JDBC URL's `read only=true` is a request to the driver, not a
+guarantee — the read-only posture is actually enforced by the service profile's
+authority, which is why the account, not the URL, is the control that matters.
+
+**If the host is unreachable**, the application still starts: authentication,
+sign-in and `/admin/**` are served from SQLite, and only the dashboards fail.
+That is deliberate (§3), and it means "the dashboard is broken" and "the whole
+app is down" are different diagnoses.
+
+**First start against a real partition** is the moment to turn on the drift
+check's teeth: `ajs.schema-validation.enabled=true` is already the default, and
+`fail-on-missing-columns` should be flipped to `true` once `DSPFFD` has confirmed
+the layouts (§12).
+
+### Switches worth knowing
+
+| Setting | Default | When to change it |
+| --- | --- | --- |
+| `spring.profiles.active` | none (production) | `local` for offline work |
+| `AJS_ALLOW_FIXTURE_PROFILES` | unset | set only by Gradle, never in a deployment |
+| `IBMI_JDBC_URL` | `jdbc:as400://ibmi-host/...` | always, in a real deployment |
+| `IBMI_USER` / `IBMI_PASSWORD` | `CHANGEME` | always |
+| `JWT_SECRET` | empty | always — startup fails without it |
+| `AUTH_DATABASE_PATH` | `./data/auth.db` | when the working directory is not writable |
+| `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | empty → random, logged once | when automating a first deploy |
+| `ajs.schema-validation.fail-on-missing-columns` | `false` | `true` once R1 is retired |
+
+On a fresh auth database `AuthBootstrap` registers the six dashboards as
+applications — overview, calendar, timeline, failures, jobs, attention — and
+creates one administrator. If `AUTH_BOOTSTRAP_ADMIN_PASSWORD` is
+unset it generates a random password and logs it **once** at WARN — deliberately,
+because a fixed default password is how these accounts reach production unchanged.
 
 ---
 
@@ -147,21 +231,23 @@ An optional fifth tier (real Db2 in Docker) is deliberately not wired up: Db2
 **LUW is not DB2 for i**, and LUW does not exercise the jt400 DRDA path at all,
 so it would add setup cost while validating almost nothing.
 
-**137 tests, 0 failures**, re-run with `--rerun-tasks` so nothing was cached.
+**173 tests, 0 failures**, re-run with `--rerun-tasks` so nothing was cached.
 
 | Suite | Tests | Tier | Covers |
 |-------|-------|------|--------|
-| `AjsDateDecodersTest` | 30 | 1 | CYYMMDD, YYMMDD, HHMMSS, sentinels, display |
+| `AjsDateDecodersTest` | 39 | 1 | CYYMMDD decode **and encode**, YYMMDD, HHMMSS, sentinels, display |
 | `AuthFlowTest` | 19 | 4 | Real sign-in/up/out, role gating, disabled, tamper |
+| `JdbcAjsRepositoryTest` | 19 | 2 | SQL + mapping vs H2 `MODE=DB2`, run window, **bounded query (C2)** |
+| `DashboardControllerTest` | 19 | 3 | Thymeleaf rendering, auth required, timeline page, **window cap** |
 | `JwtServiceTest` | 18 | 4 | Sign/verify, expiry, tampering, secret validation |
-| `JdbcAjsRepositoryTest` | 16 | 2 | SQL + mapping vs H2 `MODE=DB2`, run window |
-| `DashboardControllerTest` | 16 | 3 | Thymeleaf rendering, auth required, timeline page |
-| `AjsObservabilityServiceTest` | 11 | 1 | View logic, `*NOSBM` rule, gaps, lane building |
+| `AjsObservabilityServiceTest` | 17 | 1 | View logic, `*NOSBM` rule, gaps, lanes, **run cap and honest totals** |
 | `PermissionDenylistTest` | 9 | 4 | Denylist semantics, cascade, per-user scoping |
 | `TimelineViewHelperTest` | 8 | 1 | Bar geometry, gaps, minimum width, edges |
-| `AppPermissionEnforcementTest` | 6 | 4 | Denylist actually enforced on routes |
+| `AppPermissionEnforcementTest` | 8 | 4 | Denylist, **disabled-app**, and **timeline** enforcement on routes |
+| `CsrfProtectionTest` | 9 | 4 | CSRF is on; token-less POST 403s; first visit issues the cookie; token renders |
 | `SecurityWiringTest` | 3 | 4 | Chain installed, bcrypt is real bcrypt |
 | `MockMvcSecurityDiagnosticTest` | 1 | 4 | Isolates harness vs application security |
+| `FixtureSchemaConsistencyTest` | 4 | 2 | Fixture and mappers agree on columns; validator's requirements exist |
 
 > Counts are per top-level test class; JUnit nested classes
 > (`AjsDateDecodersTest$Cyymmdd` and friends) are folded into their parent.
@@ -183,6 +269,21 @@ and drive it with `curl`:
 | `/jobs/PAYROLL1` | 200 — both commands, padding stripped |
 | `/jobs/NOPE` | 200 — helpful not-found page, not a stack trace |
 | `/actuator/health` | 200 |
+
+**CSRF smoke test**, also over real HTTP and through headless Chromium rather than
+MockMvc, because the two defects in C1 were invisible to the harness:
+
+| Action | Result |
+|--------|--------|
+| Browser sign-in, CSRF on | 302 → `/overview` |
+| All 8 admin/dashboard POST forms | carry a real `_csrf` token |
+| `POST /auth/sign-in` with no token (forged cross-site) | **403** |
+| `POST /auth/sign-in` with a mismatched token | **403** |
+| Ordinary user → disabled app (browser) | **403** |
+| Administrator → same disabled app (browser) | 200, so it can be re-enabled |
+
+Every one of those rows was driven against the running `local` profile, not
+inferred from the unit tests.
 
 Those counters are the check that the `*NOSBM` exclusion is genuinely applied:
 8 jobs, 1 held, **1** genuine failure (PAYROLL2, with PAYROLL3 excluded), 2 never
@@ -212,6 +313,167 @@ point of the exercise:
 **Highest-leverage ask: one read-only connection to one real IBM i for one
 afternoon, before Phase 1 ends.** Cheaper than rework, more valuable than any
 local scaffolding. See §9.
+
+---
+
+## 4a. What it looks like, figure by figure
+
+The seventeen figures below are real captures of the running application, taken
+through the real sign-in flow by `docs/tools/capture.mjs`. The data in them is
+the **fabricated fixture**, so they show the application, not any particular
+scheduler. They are here rather than in a separate illustrated document because
+a picture of a page is evidence about the page, and evidence belongs next to the
+claim it supports. Regenerate with `docs/tools/README.md`; the PNGs live in
+`docs/screenshots/`.
+
+### Authentication and sign-in
+
+Auth is held in a **separate SQLite database**, deliberately not bound to the
+IBM i connection. If the two were merged, an iSeries outage would lock operators
+out of the very tool they use to diagnose that outage. The application can
+therefore authenticate, render sign-in and be administered even when the host is
+unreachable.
+
+#### Sign in
+
+![Figure 1 — Sign-in](screenshots/01-sign-in.png)
+
+**Figure 1 — Sign-in.** Standalone page with no navigation, since everything
+behind it requires a session. Errors are shown inline and preserve what was
+typed.
+
+![Figure 2 — Self-service sign-up](screenshots/02-sign-up.png)
+
+**Figure 2 — Self-service sign-up.** Always creates an ordinary user. There is
+no path from this form to an administrator account; only the admin UI can grant
+that.
+
+### Dashboards
+
+![Figure 3 — Overview](screenshots/03-overview.png)
+
+**Figure 3 — Overview.** Headline counters for the partition. The amber note
+explains the gap between raw abnormal completions and the genuine failure count,
+so the numbers can be reconciled without reading SQL. Note the _Users_ and
+_Apps_ links in the navigation, and the _Administrator / ADMIN_ identity at top
+right.
+
+![Figure 4 — Timeline](screenshots/17-timeline.png)
+
+**Figure 4 — Timeline.** Every run in a window, as a bar whose width is its
+duration. Lanes come from the _job master file_, not from history, so a job that
+was due but produced no run still appears (dashed _not run_ marker) — the case
+an operator is looking for. The window is capped at 31 days and each lane at 200
+runs, and when a lane is capped the summary still reports the true totals and
+states the truncation, so a bounded page can never read as a false all-clear.
+
+![Figure 5 — Failures](screenshots/06-failures.png)
+
+**Figure 5 — Failures.** Split into two tables that must not be conflated.
+_Genuine failures_ (PAYROLL2, 88s elapsed) are alerts. _Skipped, not failed_
+(PAYROLL3, `*NOSBM`) were not submitted by AJS — typically because the system
+was unavailable — and are listed for transparency but are not alerts.
+
+![Figure 6 — Jobs due](screenshots/04-calendar-due.png)
+
+**Figure 6 — Jobs due.** Schedules for a chosen date, defaulting to today. A
+malformed date shows a warning rather than a 400 error page, since on a
+monitoring tool that would be a support call rather than a helpful error.
+
+![Figure 7 — Jobs due on a specific date](screenshots/05-calendar-a-date.png)
+
+**Figure 7 — Jobs due on a specific date.** The last-result column is derived
+from the completion code, so `N`/`A` is never shown raw.
+
+![Figure 8 — Inventory](screenshots/07-inventory.png)
+
+**Figure 8 — Inventory.** Every AJS job definition visible to the account,
+grouped by application group. The least volatile view, and the natural candidate
+for caching so the host is not polled harder than necessary.
+
+![Figure 9 — Needs attention](screenshots/11-attention.png)
+
+**Figure 9 — Needs attention.** Held jobs (`*HELD`) and jobs that have never run
+(`JMLRD = 0`). Held is not an error state, but a job held longer than expected
+usually is.
+
+### Job detail, and the legacy-date handling
+
+AJS stores dates in packed legacy formats with sentinel values, and a naive cast
+raises SQL0181 / CPD4019. All decoding is centralised in one tested class, and
+the pages name the sentinel rather than rendering a meaningless date.
+
+![Figure 10 — Task with no scheduled next run](screenshots/09-job-sentinel.png)
+
+**Figure 10 — Task with no scheduled next run.** `JMDTE` holds the sentinel
+`9999999`, which is surfaced as “_(JMDTE sentinel 9999999 — not scheduled)_”
+rather than being cast to a date, and `JMLRD = 0` renders as “Never”.
+
+![Figure 11 — Recovery action explained in context](screenshots/10-job-nosbm.png)
+
+**Figure 11 — Recovery action explained in context.** The `*NOSBM` recovery
+action triggers an explicit note that the abnormal completion is most likely a
+skip, not a failure.
+
+![Figure 12 — Task definition and command list](screenshots/08-job-detail.png)
+
+**Figure 12 — Task definition and command list.** Definition fields are mapped
+straight from `QAIJSMST` and the command list from `QAIJS1CM` (joined on `CMJOB
+= JMJOB`). Fixed-width character columns arrive blank-padded from IBM i, so
+padding is stripped at the repository boundary rather than leaking into the
+display or a CSV export.
+
+![Figure 13 — Unknown job](screenshots/12-not-found.png)
+
+**Figure 13 — Unknown job.** A helpful page rather than a stack trace, and it
+distinguishes “no such job” from “your profile lacks authority to see it”, which
+are the two real causes.
+
+### Administration
+
+Administration mirrors the reference implementation in `my-dashboard`: the same
+table shapes, the same bcrypt algorithm (so a password hash can move between the
+two without a reset) and the same permission model.
+
+![Figure 14 — Users](screenshots/13-admin-users.png)
+
+**Figure 14 — Users.** Create accounts, change roles, enable or disable, and
+open per-user permissions. Disabling takes effect on the target's _next
+request_, not when their 24-hour token expires, because the account is re-read
+from the database every request.
+
+**The permission model is a denylist — this is the easiest thing to misread**
+
+A row in `user_applications` means the user **cannot** access that app. No rows
+means **full access**, and a newly added app is granted to everyone
+automatically because nobody holds a deny row for it yet. Inverting this turns
+“restrict one app” into “revoke everything”.
+
+That is why the page says _“0 denied of 5”_ rather than “0 granted”, and why the
+checkbox is labelled _Denied_.
+
+![Figure 15 — Per-user permissions](screenshots/14-admin-permissions.png)
+
+**Figure 15 — Per-user permissions.** Checked means _denied_. The page states
+the direction explicitly, shows the current effect per app, and lists the
+resulting effective access so the outcome is visible before saving.
+
+![Figure 16 — Application registry](screenshots/15-admin-apps.png)
+
+**Figure 16 — Application registry.** The apps users can be denied. The _Denied
+for_ column names the users holding a deny row, so a restriction is never
+invisible from the app's own page.
+
+![Figure 17 — The same dashboard as an ordinary user](screenshots/16-overview-as-user.png)
+
+**Figure 17 — The same dashboard as an ordinary user.** Compare with Figure 3:
+the identity reads _Viewer / USER_, and the _Users_ and _Apps_ links are absent.
+Navigation is rendered from the database-backed authority, so a demoted
+administrator loses those links on their next request.
+
+The figures stop here. The states that matter most are not photogenic — a 403 on
+a denied app, a 401 on a next request after a disable, a 302 on a forged POST —
+and are asserted in §4 and §6 rather than illustrated.
 
 ---
 
@@ -287,7 +549,31 @@ app" into "revoke everything". Pinned by 9 tests in `PermissionDenylistTest`.
 | Denied app route | 403 in the same session, other routes unaffected |
 | Denied app **sub-path** | 403 (cannot bypass via `/jobs/PAYROLL1`) |
 | Admin vs denylist | admin bypasses; would otherwise be unable to administer |
+| Denied app route **with CSRF on** | still 403; the two controls are independent |
+| Disabled app route, ordinary user | 403 (browser-verified; see C4) |
+| Disabled app route, admin | 200, so it can be re-enabled |
+| POST with no CSRF token | 403 (**browser-verified**, not just MockMvc) |
+| POST with a mismatched CSRF token | 403 |
+| Legitimate browser sign-in, CSRF on | 302 → `/overview` |
 | Public sign-up | creates `USER` only; no path to admin |
+
+### CSRF
+
+Protection is **enabled**, with `CookieCsrfTokenRepository` rather than the
+default session-backed repository — the latter cannot work on a stateless chain
+and fails in a way that renders a correct-looking form. All ten POST forms carry a
+token via `th:action`; no template needed editing.
+
+This matters to the threat model more than it looks. Before the fix, the *only*
+thing preventing forgery of `POST /admin/users/{id}/delete` and its siblings was
+`SameSite=Lax` on the session cookie — a browser-side control that silently
+disappears if the cookie policy is ever relaxed for a cross-site deployment, and
+which was recorded nowhere. It is now defence in depth rather than the sole
+mitigation. See design review C1 for how the fix was verified, including the
+second defect it uncovered.
+
+**Not yet done:** the `Set-Cookie` for the session still uses `setSecure(false)`,
+which must be flipped to `true` behind HTTPS. Noted in §13.
 
 ### The JWT bug worth remembering
 
@@ -322,9 +608,10 @@ remaining gap. Pinned by `JwtServiceTest.appendedToSignature`.
 
 ### Trade-offs accepted knowingly
 
-- **CSRF is disabled.** Protection rests on the `SameSite=Lax` cookie. This is
-  the most serious item in the repository and is covered in full in §8, finding
-  C1.
+- **CSRF is enabled** (it was disabled; see §8 finding C1). The remaining related
+  gap is `setSecure(false)` on the session cookie below, which must be flipped
+  behind HTTPS. `SameSite=Lax` is retained as defence in depth rather than as the
+  only mitigation.
 - **Sign-in reveals whether an email exists** ("no account found" vs "incorrect
   password"), matching the reference so users get actionable errors. This allows
   account enumeration. Collapse the two messages before facing the public
@@ -376,6 +663,53 @@ expressions. It is logic, and logic in a `th:style` attribute cannot be tested �
 the first attempt put nested `BigDecimal` expressions there, and it produced the
 truncated-page bug described in §8.
 
+### The response is bounded, and truncation is never silent
+
+A bounded query is not a bounded page. C2's SQL fix stopped reading the whole
+history table, but a five-year window still put every run in it into one HTML
+document — measured at **200,000 bars and 200,000 table rows** against a seeded
+fixture. Two limits are now in place:
+
+- **Window capped at 31 days** (`DashboardController.MAX_WINDOW`). A wider request
+  is narrowed to the last 31 days and *says so* in a warning. It is narrowed rather
+  than rejected because a 400 on a monitoring page becomes a support call, and a
+  blank chart reads as "nothing ran".
+- **Runs capped per lane at 200** (`AjsObservabilityService.MAX_RUNS_PER_LANE`),
+  keeping the **newest**. A per-job cap, not a page: lanes are derived from the
+  master file, so capping the lane count would hide jobs.
+
+**Why pagination was rejected here, despite `req.txt` §6 saying "paginate lists".**
+Two independent reasons, both specific to this view: bar positions are percentages
+*of the window*, so a page of runs drawn against the full window leaves the plot
+nearly empty for a job that ran constantly — a smaller view, not a smaller *wrong*
+view; and `gap from prior` is inherently sequential, so the first row after a page
+boundary has no truthful value. The existing `Previous/Next 24h` controls remain the
+way to step through time, because a window is a meaningful unit and a page of runs
+is not.
+
+**The cap must not create a false all-clear.** `TimelineResult` carries the drawn
+lanes *and* the true totals, computed over every run **before** capping. So the
+summary can read `43200 runs · 8 jobs · 1 abnormal` while the chart draws 200 bars.
+This was verified end-to-end, not just in unit tests: a window was seeded with
+43,200 runs where the *oldest* — and therefore discarded — run was the only
+abnormal one. The chart drew 0 abnormal bars, and the summary still reported
+`1 abnormal`. A truncated view cannot understate activity.
+
+Both bounds are proven to be genuinely tested: removing the window cap fails the
+controller test, and removing the per-lane cap fails three service tests.
+
+### Visual treatment
+
+The chart uses the shared theme's tokens (`--surface`, `--line`, lane colours,
+monospace for data and sans for prose), adapted from the sssf visualizer's palette
+but kept CSS-only — no build step, no CDN, no framework. Bars grow left-to-right
+because width *is* the meaning. A `now` marker is drawn only when the window
+actually contains now, so a historical window never shows a misleading line.
+
+The bar vocabulary is `ok` / `abnormal` / `long` / `running` / `not run`. The
+`long` class is a real domain classification (> 30 minutes, in Java), not a style
+applied in the template — the same rule as everywhere else in this view.
+
 ### Fixture history
 
 `data-ajs.sql` seeds 20 `QAIJSHST` rows across 2025-11-19..21: an overlapping
@@ -384,8 +718,11 @@ successfully, and repeated short jobs to exercise the 15-minute scale. Every
 `HSJOB` names a job present in `QAIJSMST`, because a history row for an unknown
 job is silently undisplayable.
 
-**No screenshot of the timeline exists yet** — the images in `docs/screenshots/`
-predate the view. Regenerate them with `docs/tools/`.
+`docs/screenshots/17-timeline.png` is the current figure, and `capture.mjs` now
+captures it. It uses a **tall viewport rather than `fullPage`**, because the theme's
+`background-attachment: fixed` produces a solid band in a full-page capture — the
+first attempt produced an unusable image that looked correct in the exit code. The
+older figures in `docs/screenshots/` predate the restyle and should be regenerated.
 
 ---
 
@@ -395,7 +732,9 @@ An honest critique of the current design, ordered by how much each issue matters
 rather than how easy it is to fix. Every finding was verified against the code,
 with file and line references so each can be checked.
 
-**Verdict:** the core architecture is right and I would not change it. Read-only
+**Verdict:** the core architecture is right and I would not change it. (This
+section judges the *design*; §12a judges the *deliverable* and proposes what to
+do next.) Read-only
 SQL over `QUSRIJS`, a repository interface with two implementations,
 server-rendered Thymeleaf, domain semantics in tested Java — those decisions are
 holding up, and the offline test tier is the reason the bugs in this document
@@ -403,21 +742,72 @@ were caught at all. The problems are concentrated in the security layer's
 reasoning and in query strategy. Nothing is an emergency; **C1 and C2 should be
 fixed before this is exposed beyond a handful of trusted users.**
 
-| # | Issue | Severity | Effort |
+| # | Issue | Severity | Status |
 | --- | --- | --- | --- |
-| C1 | CSRF disabled; the justification in the comment is false | **High** | S |
-| C2 | `findRunsBetween` selects the entire history table | **High** | M |
-| C3 | Admin actions are not audited at all | Medium | S |
-| C4 | Permission denylist defaults could fail open | Medium | S |
-| C5 | Several service methods each re-read the whole master file | Low | S |
-| C6 | No caching, and no actual poller | Low | M |
-| C7 | `LocalDate.now()` in domain code limits testability | Low | S |
+| C1 | CSRF disabled; the justification in the comment is false | **High** | **Fixed** |
+| C2 | `findRunsBetween` selects the entire history table | **High** | **Fixed** |
+| C3 | Admin actions are not audited at all | Medium | Open |
+| C4 | A disabled app is hidden but still reachable (found while fixing C1) | Medium | **Fixed** |
+| C5 | Several service methods each re-read the whole master file | Low | Open |
+| C6 | No caching, and no actual poller | Low | Open |
+| C7 | `LocalDate.now()` in domain code limits testability | Low | Open |
+| C8 | The timeline was not a governable app, so it could not be denied per user (found while documenting) | Medium | **Fixed** |
 
-### C1 — CSRF is disabled, and the stated reason was untrue
+Fixing C1 and C4 each uncovered a second defect that the original review had not
+identified, and both were the same shape: a control that read as enforced but was
+not. Details are in the sections below. Neither was caught by the test suite as it
+stood, which is the point — a passing suite is not evidence that a gate is closed.
 
-**High. Fix before wider exposure. Small effort.**
+### C1 — CSRF is disabled, and the stated reason was untrue — FIXED
 
-`SecurityConfig.filterChain` disables CSRF with this justification:
+**Fixed.** CSRF is now enabled with `CookieCsrfTokenRepository`.
+
+Two defects were found here, not one.
+
+**The first was the one the review predicted:** protection was off, and the comment
+justifying it was false.
+
+**The second was only visible once protection was switched on.** The first attempt
+used `csrf(Customizer.withDefaults())`, which is the obvious fix and is what the
+guidance in this document originally recommended. It was wrong for this
+application. The default repository is `HttpSessionCsrfTokenRepository`, and the
+filter chain is `SessionCreationPolicy.STATELESS` — so the token was written into
+a session that is never retained. The token still **rendered correctly into every
+form**, because Thymeleaf's `th:action` reads it during rendering, which means the
+HTML looked perfect while every submission would have 403ed for a real user. The
+fix is `CookieCsrfTokenRepository.withHttpOnlyFalse()`, which is the supported
+pairing for a stateless chain.
+
+That second defect is worth dwelling on because of how it presented: the test
+suite was **green** in both states. A disabled filter makes a POST succeed, and so
+does a working filter; the existing tests only ever asserted the success case. This
+is the same trap as §9 bug 6 — "assert something rendered" is not "assert it
+finished rendering" — and the answer was the same: assert the failure mode, and
+verify against a real browser rather than the harness.
+
+**What is in place now:**
+
+- `CsrfProtectionTest` (7 tests) asserts the *inverted* case, so re-disabling
+  protection fails loudly: a token-less POST must 403, as must a token-less
+  sign-out. It also asserts the `_csrf` field actually renders on the sign-in and
+  sign-up pages, and that a token-bearing POST is accepted.
+- Every one of the ten POST forms was confirmed to carry a real token, driven
+  through headless Chromium against the running `local` profile, not through
+  MockMvc. Recorded results: sign-in returned 302 to `/overview`; all eight
+  admin/dashboard forms reported `csrf: true`; a forged cross-site POST with no
+  token returned **403**, as did one with a mismatched token.
+- `SameSite=Lax` on the session cookie is retained as defence in depth, but it is
+  no longer load-bearing. See §6.
+
+**A limit of the MockMvc coverage, stated so it is not over-trusted:** the
+`XSRF-TOKEN` cookie is written lazily by Spring Security 6, when the deferred token
+is first accessed, so whether it appears on a given GET depends on harness state.
+MockMvc therefore verifies rendering and acceptance, not the browser round trip.
+Prefer the real-browser check whenever the CSRF wiring changes.
+
+### C1 (original finding, kept for the record)
+
+`SecurityConfig.filterChain` disabled CSRF with this justification:
 
 > CSRF is disabled because the session is a cookie-authenticated stateless API
 > and there is no HTML form POST from a browser session in the classic sense.
@@ -456,15 +846,16 @@ automatically and Spring Security's default token repository works unchanged;
 login and logout POSTs are handled by the same integration. Then delete the
 comment rather than rewording it.
 
-**Done so far:** the false comment has been replaced with an accurate one naming
-the real weakness. Re-enabling CSRF is a behaviour change, so it is left to
-whoever owns the security posture.
+This finding is now closed; see the fixed section above.
 
-### C2 — the timeline reads the entire history file on every request
+### C2 — the timeline reads the entire history file on every request — FIXED
 
-**High for scale. Medium effort.**
+**Fixed, in two parts** — the query and the response, which turned out to be
+separate problems. The date range is now a SQL predicate and the whole-table read
+is gone; the page size is separately bounded, because a bounded query still
+produced an unbounded page.
 
-`JdbcAjsRepository.findRunsBetween` builds:
+`JdbcAjsRepository.findRunsBetween` previously built:
 
 ```java
 String sql = "SELECT " + JobRunRowMapper.SELECT_COLUMNS + " FROM " + HISTORY + " h";
@@ -489,11 +880,118 @@ SQL0181/CPD4019 (risk R2). But "cannot compare timestamps directly" does not mea
    database can use an index for ordering.
 3. At minimum, an explicit upper bound so the query cannot grow without limit.
 
-Worth deciding at the same time: the timeline does not paginate, so a wide window
-gives an unbounded response. `req.txt` §6 targets "a few thousand AJS jobs" at
-"< 2s p95". Fetching the whole history file per page view will not meet that, and
-the failure will present as a slow DRDA transfer rather than an error — the
-hardest kind to diagnose.
+**What was implemented.** Option 1 and option 2 above, together:
+
+```java
+Integer fromDate = AjsDateDecoders.encodeCyymmdd(from.toLocalDate());
+Integer toDate   = AjsDateDecoders.encodeCyymmdd(to.toLocalDate());
+
+String sql = "SELECT " + JobRunRowMapper.SELECT_COLUMNS
+        + " FROM " + HISTORY + " h"
+        + " WHERE h.HSDTE IS NOT NULL"
+        + " AND h.HSDTE BETWEEN ? AND ?"
+        + " ORDER BY h.HSDTE, h.HSTME";
+```
+
+Two details in that snippet are where the risk actually sits.
+
+**The encoder had to be written, and correctness depends on it being a true
+inverse.** `AjsDateDecoders` had decoders only. `encodeCyymmdd` was added to the
+same class — the R2 containment boundary — deliberately, so the century flag logic
+exists in exactly one place. The range is compared on *encoded* values, so an
+off-by-one or a mishandled century flag would silently move a window edge and drop
+or add a day of history. That is a wrong-answer bug, not an error, which is the
+class this project is most careful about. `AjsDateDecodersTest` now pins the round
+trip on both sides of 2000, asserts the encoded ordering that makes `BETWEEN`
+valid at all, and asserts that years outside 1900..2099 throw rather than
+guess a century.
+
+**The bounds are inclusive of both whole days on purpose.** The method's contract
+is a half-open `[from, to)` on timestamps, so encoding `to` as its date and using
+`<=` over-fetches by at most one day, and the Java filter below still applies the
+exact bound. Widening in SQL and narrowing in Java can only over-read; the
+reverse would silently lose runs. `JdbcAjsRepositoryTest` asserts that two adjacent
+day-windows partition the history with nothing lost at the shared boundary and
+nothing double-counted.
+
+**How the fix is tested, and why structurally.** A three-way split, because only
+the first is a claim about performance:
+
+1. **The SQL shape is asserted directly.** `historyQueryIsBounded` wraps the
+   `JdbcTemplate` in a CGLIB proxy, records the statement the repository actually
+   issues, and requires `WHERE`, `HSDTE`, `BETWEEN` and `ORDER BY`. This was
+   verified to be a real test by reverting the query to the unbounded form: it
+   fails, and passes again once restored. Timing assertions were rejected — a
+   20-row fixture would pass either way.
+2. **Boundary behaviour** is asserted behaviourally (adjacent windows, an empty
+distant window).
+3. **The encoder** is covered in the decoder suite as above.
+
+Worth noting what the behavioural tests *cannot* show: they pass with the old
+unbounded query too, which is precisely why assertion 1 exists.
+
+**The response bound — also fixed, and it was a separate problem from the query.**
+Bounding the SQL did not bound the page, because every run is a bar *and* a table
+row. Measured before the fix, by seeding 200,000 runs into the local profile: the
+query returned them in ~0.4 s while the *page* would have carried 400,000 DOM
+elements. The query was never the bottleneck; the rendering was.
+
+Two bounds, for two different reasons:
+
+1. **A window is capped at 31 days** (`DashboardController.MAX_WINDOW`). A wider
+   request is narrowed from the far past — keeping the right-hand edge, since a
+   monitoring page is read from "now" leftwards — and the page says so in a
+   warning. Not a 400: on a monitoring tool a 400 is a support call, and a blank
+   chart reads as "nothing ran".
+2. **Runs are capped per lane** at `MAX_RUNS_PER_LANE` (200), keeping the
+   **newest** runs.
+
+The second is the interesting decision, and it is deliberately *not* pagination,
+which `req.txt` §6 asks for in general terms. Pagination is wrong here for two
+independent reasons:
+
+- **The chart is a density view.** Bar positions are percentages *of the window*,
+  so drawing a page of runs against the full window would leave the plot nearly
+  empty for a job that actually ran constantly. Pagination would not make the view
+  smaller, it would make it misleading — the exact misreading the page exists to
+  prevent.
+- **`gap from prior` is sequential.** The first row of any page after the first has
+  no truthful value, because its predecessor is on another page.
+
+So the bound is applied per lane, and truncation is **reported with its exact
+figure** rather than applied silently. This was the part worth getting right: a
+silent cap would understate the run count and could hide failures, which is worse
+than a slow page. `TimelineResult` therefore returns the drawn lanes *and* the true
+totals for the window, and the counters are computed **before** the cap.
+
+**Verified end to end**, not just in unit tests. With 200,000 runs seeded for one
+job and a 31-day window containing 43,200 of them, driven through headless
+Chromium against the running `local` profile:
+
+| Measure | Result |
+| --- | --- |
+| Bars drawn | **200** (the cap), not 43,200 |
+| Table rows drawn | **200** |
+| Page render | **1.2 s**, 152 KB |
+| Summary line | `43200 runs · 8 jobs · 1 abnormal` — the true totals |
+| Notice | "Showing the most recent 200 of 43,200 runs in this window" |
+
+And the honesty claim tested directly: the seeded window's **oldest** run was made
+abnormal, so the cap discarded it. The chart drew **0 abnormal bars** while the
+summary still reported **1 abnormal**. A truncated view therefore cannot produce a
+false all-clear, which is the property that matters.
+
+**Behavioural guard:** `AjsObservabilityServiceTest` covers that failures and
+still-running runs are counted before capping, that the cap keeps the newest runs,
+and that a history row with no matching lane is *not* counted as an omission
+(so `omittedRuns` means only "dropped by the cap"). Both bounds were verified to
+fail when removed: disabling the window cap fails the controller test, and
+disabling the per-lane cap fails three service tests.
+
+**Not changed:** the chart still does not paginate between windows, and the
+quick ranges ("Previous 24h", "Next 24h") remain the way to step through time —
+which is the right granularity for this view, since a window is a meaningful unit
+and a page of runs is not.
 
 The same pattern exists in `findScheduledOn`, which calls `findAllJobs()` and
 filters in Java. That one is defensible and documented as a deliberate trade-off
@@ -512,7 +1010,46 @@ This is the cheapest high-value fix here: a structured log line per admin
 mutation (actor, action, target, outcome) is about twenty lines. Full audit
 tables are a Phase 3 concern; a log line is not.
 
-### C4 — permission denylist defaults
+### C4 — a disabled app was hidden but still reachable — FIXED
+
+**Fixed.** `AppPermissionInterceptor` now denies a disabled app.
+
+This was not the finding as originally written. The original concern was that the
+denylist could "fail open" — but `PermissionDenylistTest` already pinned that
+behaviour as *intended* ("no rows means full access, not no access"), so there was
+no defect there. Writing the test the finding asked for — a user with no permission
+rows — is what exposed a real one elsewhere.
+
+**The defect.** Disabling an app in `/admin/apps` updated the database and removed
+it from `AppRepository.accessibleApps()`, but `AppPermissionInterceptor` never
+consulted `enabled`. It only checked the denylist. So the route kept answering
+**200** to any signed-in user: the admin UI said "disabled", the navigation still
+worked if you typed the URL, and nothing enforced the setting. Disabling an app was
+cosmetic. That is the same failure shape as C1 — a control that reads as enforced
+and is not — and it is worse than not offering the control, because it is trusted.
+
+The gap was found by writing the failing test first; it reported
+`expected:<403> but was:<200>` before any production change was made.
+
+**The fix** adds an `enabled` check ahead of the denylist check. Administrators are
+exempt, for the same reason they bypass the denylist: re-enabling a disabled app is
+an admin action, and locking admins out of the page they need to fix it would have
+no in-product remedy.
+
+**Verified in a real browser**, both sides of the exemption, against the running
+`local` profile:
+
+| Actor | Route | Result |
+| --- | --- | --- |
+| Ordinary user | enabled app (`/overview`) | **200** |
+| Ordinary user | disabled app (`/failures`) | **403** |
+| Administrator | disabled app (`/failures`) | **200**, so it can be re-enabled |
+
+`AppPermissionEnforcementTest` covers both cases, including the assertion that the
+disabled app is genuinely absent from `accessibleApps()` — that half was already
+correct, which is exactly why the missing half went unnoticed.
+
+### C4 (original finding, kept for the record)
 
 **Medium. Small effort.**
 
@@ -558,6 +1095,35 @@ directly. `AjsDateDecoders.decodeYymmdd` already does the right thing, with a
 package-visible variant taking an injected pivot so tests are deterministic. The
 service layer does not follow that pattern, so date-relative behaviour is testable
 only relative to "today". Worth injecting a `Clock` if such behaviour grows.
+
+### C8 — the timeline could not be denied per user — FIXED
+
+**Medium. Fixed. Small effort.**
+
+The Timeline dashboard was added to the navigation after the permission model was
+built, and was never registered as an app. Three separate places had to agree, and
+all three were missing it:
+
+1. `AuthBootstrap.BUILT_IN_APPS` — so no `applications` row existed to deny.
+2. `AppPermissionInterceptor.ROUTE_TO_SLUG` — so no path mapped to a slug.
+3. `WebMvcConfig`'s `addPathPatterns` — so the interceptor was not even *invoked*
+   for `/timeline`.
+
+Consequence: an administrator could not restrict the timeline for any user. The
+admin UI offered no such row, and had one been inserted by hand the interceptor
+would still never have run. It was the one dashboard whose permission control did
+not exist — the same shape as C4, but caused by omission rather than by a missing
+check.
+
+Found while capturing the figures in §4a, when the screenshot tooling had to be
+extended to cover the view and the registered-apps list did not contain it.
+Verified end-to-end: with a deny row on `timeline`, an ordinary user gets **403**
+and `/overview` still returns 200; an administrator gets 200, so it can be
+re-enabled. The enforcement test fails when the route mapping is removed.
+
+**Lesson:** three places encode "which routes are governed", and nothing kept them
+in step. The test now covers the timeline specifically, but the structural fix would
+be to derive the path patterns from the slug map rather than repeat them.
 
 ### What is good, and should not be "cleaned up"
 
@@ -615,6 +1181,37 @@ Recorded because each would have reached a stakeholder as a wrong dashboard.
    same as "assert it finished rendering."**
 7. **`!warning` on a `String`** — a compile error, noted only because the intent
    was a null check and the code said negation.
+
+Two more were found later, while fixing the design review, and both are recorded
+here because they share a lesson with bug 6 rather than with bugs 1-5:
+
+8. **The CSRF token rendered correctly but no browser could ever submit a form.**
+   Enabling CSRF with the default `HttpSessionCsrfTokenRepository` on a
+   `STATELESS` filter chain left the token unverifiable: it renders into the HTML
+   (so the page looks perfect) but is stored in a session that is never retained.
+   Every POST would have 403ed for a real user. Fixed with
+   `CookieCsrfTokenRepository`. **The test suite was green before and after** —
+   a disabled filter and a working filter both let a POST succeed, and nothing
+   asserted the failure case. Found by driving a real browser.
+9. **A disabled app was hidden from the navigation but still reachable.**
+   `AppPermissionInterceptor` checked the denylist and never `enabled`, so
+   disabling an app in `/admin/apps` changed a boolean and a menu entry and
+   nothing else: `GET /failures` still returned 200 for any signed-in user. Found
+   by writing the test first; it reported `expected:<403> but was:<200>`.
+10. **The timeline could not be denied per user at all.** It was never registered
+    as a built-in app, was absent from the interceptor's route map, and was absent
+    from `WebMvcConfig`'s path patterns — three independent omissions that all had
+    to be fixed. An administrator could not restrict the view, and no UI row
+    offered the option. Found while extending the screenshot tooling to cover the
+    view. Verified: deny row → 403 for an ordinary user, 200 for an admin.
+
+**The shared lesson, which is bug 6's lesson widened.** Bugs 1-5 were *wrong
+answers* the tests could see, because something was asserted and the assertion was
+false. Bugs 6, 8 and 9 were *unenforced controls* the tests could not see, because
+a control that is switched off produces the same observable behaviour as one that
+is switched on — a page that renders, a POST that succeeds. Green tests are not
+evidence a gate is closed. Assert the rejection, and confirm the test fails when
+the gate is removed.
 
 ### Two infrastructure traps worth remembering
 
@@ -770,13 +1367,18 @@ is a `SELECT`, and a test asserts no write reaches the fixture.
 | R8 | Multi-partition drift |
 
 **R1 now has a concrete open question** raised by the timeline work: the key and
-granularity of `QAIJSHST`. The fixture assumes `(HSJOB, HSSEQ, HSDTE, HSTME)` with
+granularity of `QAIJSHST`. §12b is the plan for settling it without the host, and
+the script for settling it with one. The fixture assumes `(HSJOB, HSSEQ, HSDTE, HSTME)` with
 one row per run; the original key `(HSJOB, HSSEQ)` could not hold history at all.
 If the real file is keyed differently, or holds one row per *step* rather than per
 run, the timeline's bars would be wrong in a way tests against H2 can never
 reveal. One `DSPFFD` retires this.
 
 ### To settle on a real partition, before Phase 1 exits
+
+§12b turns this list into a scripted capture session, because the host is on an
+internal network and access is scarce. The five questions below are the ones
+worth spending it on.
 
 1. `DSPFFD QUSRIJS/QAIJSMST`, `QAIJSHST`, `QAIJS1CM` — diff against
    `src/main/resources/fixture/schema-ajs.sql`. **This diff retires risk R1**, the
@@ -797,11 +1399,287 @@ Also unresolved, from `req.txt` §9: multi-partition support is not designed for
 
 ---
 
+## 12a. Honest critique, and the path forward
+
+§8 reviewed the design as it stood and found real defects. This section is a
+different question, asked later and answered less comfortably: **what is still
+wrong with this project as a deliverable, and what should happen next?** Nothing
+here is a defect in the sense of C1–C8; most of it is the gap between "a
+well-argued codebase" and "something an operations team can run".
+
+### What I would say if asked to review it cold
+
+**The engineering is better than the product's evidence base.** The invariants
+are real (read-only, two datasources, offline test tier), the bugs in §9 are the
+kind a careful team finds, and the security findings in §8 were found by
+insisting on evidence rather than by accident. But the entire AJS layer rests on
+an **authored** schema (§4), and the fixture's data model is one guess deep: the
+`QAIJSHST` key is invented, and the timeline's correctness depends on it. That is
+the single largest piece of unearned confidence in the repo, and no amount of
+local testing can retire it.
+
+**The auth store is the least finished part of the system, and it is the part
+that faces the network.** The AJS side is read-only, so its worst failure is a
+wrong number on a screen. The auth side writes — users, roles, permissions — and
+it has no migrations, no audit trail (C3), no session revocation, and a
+bootstrap administrator whose password may be sitting in a log. Security was
+treated as a set of properties to verify rather than as a lifecycle to operate,
+and the gap shows at exactly the boundaries an operator would hit first.
+
+**There is no way to change a password.** `UserRepository.updatePasswordHash`
+exists and has no caller — no controller, no form, no admin action. The bootstrap
+log message says "Sign in and change it", and there is nowhere to do that. The
+only remedies today are deleting `data/auth.db` (losing every user) or editing
+the SQLite file by hand. That is not a missing nicety; for an account whose
+password was printed to a log, it is the difference between a control and a
+ritual. It is also the clearest example of the pattern in this section: the
+hard part (bcrypt, JWT, CSRF, the denylist) is done and tested, and the mundane
+part that makes it usable was never finished.
+
+**The "no IBM i" story is good and the "first IBM i" story is not.** The local
+profile is genuinely well built — guard, fixture, one command. What is missing is
+the transition: there is no readiness gate that says "this build may not be
+pointed at production until `DSPFFD` has confirmed the layouts", and the drift
+checker warns rather than blocks by default. A tool whose value proposition is
+"trust this view of production" should be strict about the one thing that
+determines whether the view is correct.
+
+**The real constraint is access, not effort.** The IBM i sits on an internal
+network and is not reachable from where this was built. That is not a scheduling
+inconvenience — it means the entire AJS layer has only ever been exercised
+against H2, and no amount of local work can substitute for one connection. So the
+honest recommendation is not "build more offline confidence"; it is "spend the
+access we do not have on the fewest possible questions". §12b lists exactly which
+questions those are, and what can be built in the meantime without guessing.
+
+**The documentation is now proportionate, but it is one 1,400-line document.**
+Merging the illustrated walkthrough into `NOTES.md` removed the drift problem
+and made the figures sit next to the claims they support. It also made the file
+long enough that a new reader will not read it. The numbered sections help; a
+reader who only wants "how do I run this" needs §2 and nothing else.
+
+### Where the risk actually is, ranked
+
+1. **R1 — the schema is a guess.** Everything downstream is a plausible
+   elaboration of an unverified assumption. One `DSPFFD` retires it, and the
+   highest-value hour in this project is still an hour on a real partition.
+2. **The auth store's operational surface.** No way to change a password, no
+   migration path, no audit log, no way to revoke a session, and a bootstrap
+   password that may reach a log file. Cheap to fix, and the fixes are boring —
+   which is why they get deferred.
+3. **A false all-clear that the bounds do not prevent.** The window and per-lane
+   caps report truncation honestly, but they still *bound* what an operator sees.
+   An operator who reads "1 abnormal" from a capped summary is reading a true
+   number about a deliberately limited window. That is defensible, but it is a
+   design decision resting on the operator noticing the notice.
+4. **The unexercised DRDA path (R5).** The driver is on the classpath and the URL
+   is right; nothing has ever opened a socket to a real host server from this
+   application. "It compiled and the tests pass" is not evidence here.
+5. **C3, C5/C6, C7.** Real, small, and genuinely low priority next to the above.
+
+### The path forward
+
+In order. Each step is chosen because it either retires an assumption or removes
+a class of failure — not because it is interesting.
+
+**Phase 0 — one afternoon, one partition.** The IBM i is on an internal network
+and not reachable from here, so this is the one phase that cannot be done by
+anyone with only this repository. It needs read-only credentials and one session:
+`DSPFFD` on `QAIJSMST`, `QAIJSHST` and `QAIJS1CM`, diff against
+`src/main/resources/fixture/schema-ajs.sql`, then run the app with
+`ajs.schema-validation.enabled=true` and `fail-on-missing-columns=true`. This
+retires R1, confirms R2's encodings against real data, and — the part that is
+easy to skip — **exercises the DRDA path for the first time** (R5). If the
+`QAIJSHST` key differs from the fixture's, the timeline's geometry needs a
+re-think before anything else is built on it. Do this before Phase 1 exits.
+
+Because that session is scarce, it should be prepared as a single scripted run
+rather than an exploration: §12b is the checklist, and the capture format matters
+more than the conclusions.
+
+**Phase 1 — make the auth store operable.** In order of effort, not importance:
+wire up a change-password form (the repository method already exists and is
+unused, so this is a controller and a template, not a design); log admin
+mutations (C3, ~20 lines); add a schema migration path so the SQLite store can
+change without a manual `ALTER` (currently the schema is `CREATE TABLE IF NOT
+EXISTS` on every start, which silently cannot evolve); add a "revoke all
+sessions" action so a leaked token can be invalidated before its 24 hours
+expire; and stop the bootstrap password from being the only credential in the
+logs — require `AUTH_BOOTSTRAP_ADMIN_PASSWORD` in any environment whose logs are
+retained. Audit tables are Phase 3; a log line is not.
+
+**Phase 2 — one cached snapshot per request (C5/C6).** Not for speed; for
+predictability. A single `findAllJobs()` per request, with an adaptive interval,
+is the prerequisite for any live-update work, and it is also what makes the
+polling load argument (R6) answerable with a number instead of a shrug.
+
+**Phase 3 — decide, do not build.** `req.txt` §9 question 1 (write support) is
+still open. §11 argues to keep the app read-only; if that decision is taken, say
+so in the document and close the question. If write support is wanted, it is a
+separate product with a privileged profile and its own review — not a branch on
+this one.
+
+**Deliberately not on the list:** a REST/JSON API (nothing needs one yet), a
+SPA (the server-rendered pages are the reason the timeline works without
+JavaScript), multi-partition support (undesigned, and the drift risk multiplies),
+and Docker (Db2 LUW is not DB2 for i, so a container validates nothing about the
+host path).
+
+### What I would not change
+
+The read-only invariant, the repository interface with two implementations, the
+domain rules in tested Java rather than in templates, the honest-truncation
+design in the timeline, and the default-deny fixture guard. Those are the five
+decisions that make the rest of this document defensible, and a refactor that
+touches any of them should be argued for rather than assumed.
+
+---
+
+## 12b. Working without the host: what H2 can and cannot prove
+
+The IBM i is on an internal network and is not reachable from the machine this
+was built on. The tempting response is "so build a better mock". That is the
+wrong instinct, and it is worth being precise about why, because the difference
+between a mock that earns its keep and one that quietly fabricates confidence is
+the whole subject of this section.
+
+### The layer already in place, and what it is actually doing
+
+The seam is not new. `AjsRepository` is an interface with the JDBC
+implementation behind it, and the `local`/`test` profiles swap in H2 in
+`MODE=DB2` with an authored schema. That is already the "mock layer", and it is
+better than most, for three specific reasons:
+
+- **It exercises the real SQL**, not a Java stub. `JdbcAjsRepository` issues the
+  same statements against H2 as against `QUSRIJS`, so the query *shape* — the
+  `HSDTE BETWEEN` predicate, the `ORDER BY`, the `QAIJS1CM` join, the trimming
+  of `CHAR` padding — is genuinely tested. A Mockito stub would have proven none
+  of that.
+- **It exercises the real templates and the real filter chain**, over MockMvc,
+  and the smoke-test rows in §4 were driven against the running `local` profile.
+- **It is honest about its own limits.** `JdbcAjsRepositoryTest` says in its
+  class javadoc that the schema is authored and not extracted. That sentence is
+  doing more work than any test in the file.
+
+What it cannot prove is a short list, and every item on it is a property of the
+**host**, not of the application:
+
+| Cannot prove offline | Why not | What would prove it |
+| --- | --- | --- |
+| The real column set of `QAIJSMST`/`QAIJSHST`/`QAIJS1CM` | H2 is running a schema we wrote | `docs/host-capture/01-columns.sql` + `diff-against-fixture.sh` |
+| The real key of `QAIJSHST` | the fixture's key is invented | `docs/host-capture/02-keys.sql` |
+| Real `CYYMMDD`/`YYMMDD` encodings and sentinels per release | our decoder assumes a convention | `docs/host-capture/03-date-encodings.sql` |
+| That DRDA/host server works end to end | H2 is a local file | `docs/host-capture/05-drda.sql` |
+| jt400's own type mapping (packed decimal, `CHAR` padding) | H2's `INTEGER`/`CHAR` are not DB2 for i's | real rows through the real driver |
+| Authority behaviour (`*USE`, AJS function authority) | no authority model offline | a real profile |
+| Performance on a real history file | 20 fixture rows | a real partition, or a copy |
+
+Note what is *not* on that list: the domain logic, the `*NOSBM` rule, the
+timeline geometry, the permission model, CSRF, the denylist, the truncation
+honesty. Those are all app-side and are genuinely tested. The offline suite is
+not weak because it is offline; it is weak in exactly one place, and that place
+is the host's schema.
+
+### Where more mocking would actively hurt
+
+Three tempting upgrades, each of which would make the repo look better and the
+evidence worse:
+
+1. **A hand-written fake `AjsRepository` returning canned `AjsJob` records.**
+   This is the one to avoid. It bypasses the SQL, the row mapper and the decoder
+   — precisely the three things most likely to be wrong about a real host — and
+   replaces them with Java objects that are correct by construction. Every test
+   against it would pass on a partition where the app returns HTTP 500. The
+   existing H2 implementation is strictly better for the same effort.
+2. **Recorded fixtures from a real host, captured as SQL seed rows.** This is the
+   right idea *if the capture is real* — and it is the best thing that can come
+   out of the Phase 0 session. It is the wrong idea if the rows are invented to
+   look like a capture. The distinction must be written down in the file, or a
+   future reader cannot tell an extraction from a fabrication. §12a's Phase 0
+   should produce exactly this: a `schema-ajs-real.sql` and `data-ajs-real.sql`
+   from `DSPFFD` and a few `SELECT`s, committed beside the authored fixture, with
+   the tests parameterised over which one is in use.
+3. **A DB2-for-i container to "test against".** Db2 LUW is not DB2 for i, and it
+   does not exercise the jt400 DRDA path at all. It would add setup cost and
+   validate nothing that H2 does not already validate.
+
+### What to do with the access we do not have
+
+Ordered by value per unit of guesswork. The first three need no host.
+
+**1. Make the schema assumption visible instead of implicit. — DONE.**
+`FixtureSchemaConsistencyTest` reads the column lists from the mappers' own
+`SELECT_COLUMNS` constants and from `AjsSchemaValidator`'s required sets, and
+asserts the fixture provides every one of them. It also pins the columns the
+`CMJOB = JMJOB` join and the invented `QAIJSHST` key depend on. Verified the way
+§9 says to verify a gate: deleting a column from the fixture makes all four tests
+fail. This does not prove the *real* files have these columns — only `DSPFFD` can —
+but it stops the fixture and the code drifting apart while nobody is looking.
+*(Built without a host.)*
+
+**2. Turn the readiness gate into code. — DONE.**
+`src/main/resources/application-ibmi.yml` is the first-connection profile: it sets
+`ajs.schema-validation.fail-on-missing-columns=true`, so drift is a failed start
+with a precise list of missing columns rather than an empty dashboard. The default
+profile still warns and starts, which is right for a host already inspected and
+wrong for the first look. Verified against no host at all: `ibmi` exits with
+`AJS schema drift detected ... QAIJSMST unreadable (The application requester
+cannot establish the connection. (ibmi-host))`. *(Built without a host.)*
+
+**3. Write the Phase 0 capture script now, so the scarce session is scripted. — DONE.**
+`docs/host-capture/` holds five SQL files — columns, keys, date encodings, sample
+rows, DRDA — a `README.md` with the run order and what to save, and
+`diff-against-fixture.sh`, which compares a capture against the authored fixture
+and reports both directions of disagreement. The diff script was rehearsed against
+a synthetic capture built from the fixture (reports "subset", correct) and against
+one with a column removed and another added (reports the exact mismatch, correct).
+The session is now execute-and-save rather than explore-and-conclude.
+*(Built without a host; running it needs one.)*
+
+**4. Improve the offline suite's weakest real gap: the row mapper against real
+types.** The mapper reads `JMDTE` as an `Integer` and `JMJOB` as a padded
+`CHAR`. On a real host these may arrive as `BigDecimal` or a differently padded
+string. A unit test that feeds the mapper the *types* jt400 returns — as recorded
+from the driver's metadata, once available — closes a gap H2 cannot. *(Needs one
+host read to be accurate; until then, this is a known unknown, not a task.)*
+
+**5. Keep the fixture honest and keep saying so.** The `local` profile's
+banner, the `FixtureProfileGuard`, the authored-schema javadoc and §4's "What
+local testing cannot cover" are all doing the same job: making it impossible to
+mistake the fixture for the host. That redundancy is the correct response to
+having no host, and it should not be simplified away.
+
+### The recommendation, stated plainly
+
+**Do not build a bigger mock. The gate, the capture script and the honest labels
+are built; spend the first host session on schema and encodings rather than on
+features.**
+
+Concretely: items 1–3 above are done and host-free, so the offline work left is
+Phase 1 (auth operability, §12a). After that, stop adding to the AJS layer until
+one read-only session on the internal network has produced `DSPFFD` output and a
+handful of real rows. `docs/host-capture/` is that session, written in advance.
+Anything built on top of the AJS layer before that session is an elaboration of
+an assumption, and the further it goes the more expensive the eventual correction
+becomes.
+
+If the internal network can be reached through a jump host or a VPN, the single
+highest-value thing this project can do is spend one hour there. If it cannot be
+reached at all, then the correct position is the one this document already
+takes: the app is a well-tested elaboration of a documented schema, it says so,
+and it should not be deployed against a partition whose layout has never been
+inspected.
+
+---
+
 ## 13. Hand-off
 
 If you are picking this up cold, read this document in order, then `req.txt` for
-the original requirements. `docs/README.pdf` is an illustrated walkthrough of the
-running application, generated by `docs/tools/` from real HTTP responses.
+the original requirements. §4a is the illustrated walkthrough of the running
+application — real captures of real pages, generated by `docs/tools/` from real
+HTTP responses. §12b is the one to read before adding anything to the AJS layer:
+it says what the offline suite can and cannot prove, and why the host is the only
+thing that can close the gap.
 
 ### Invariants to preserve
 
@@ -827,15 +1705,73 @@ running application, generated by `docs/tools/` from real HTTP responses.
 - **`testImplementation` deps are not on the `bootRun` classpath.**
 - **`setSecure(false)` on the session cookie must be flipped to `true`** behind
   HTTPS.
+- **There is no change-password form.** `UserRepository.updatePasswordHash` is
+  implemented and never called. The bootstrap WARN message tells the operator to
+  change the password; nothing in the UI can. §12a lists this first in Phase 1.
+- **CSRF uses `CookieCsrfTokenRepository`, deliberately.** Switching to the default
+  repository silently breaks every form on a stateless chain *while still rendering
+  a valid-looking token*. If you touch the CSRF config, verify with a real browser,
+  not with MockMvc — see C1 for why the harness cannot see this.
+- **A green test suite does not mean a control is enforced.** C1, C4 and C8 were
+  all "configured but not effective" defects that the suite passed through. When
+  adding a gate, assert the *rejection* case, and prove the test fails when the
+  gate is removed.
+- **Adding a dashboard means editing three places, and all three fail silently.**
+  `AuthBootstrap.BUILT_IN_APPS` (the app row), `AppPermissionInterceptor.ROUTE_TO_SLUG`
+  (the slug), and `WebMvcConfig.addPathPatterns` (the interceptor's path). Miss the
+  third and the interceptor never runs, so the page is ungoverned while looking
+  perfectly normal. The timeline was in that state (C8).
+- **`background-attachment: fixed` breaks `fullPage` screenshots.** The theme uses
+  it for the aurora background; a full-page capture renders it as a solid band.
+  Capture the timeline with a tall viewport instead.
 
 ### First three things I would do
 
-1. **Fix C1** — re-enable CSRF, or at minimum keep the corrected comment. Highest
-   risk-to-effort ratio in the repository.
-2. **Fix C2** — bound the history query. It is the only thing here that gets worse
-   as the system succeeds.
-3. **Run `DSPFFD`** and retire R1. Everything about the data model rests on an
-   authored schema.
+C1, C2, C4 and C8 are now done. The sequenced plan — including the auth-store
+work and the "first real partition" gate — is §12a; this is the short version:
+
+1. **Run `DSPFFD`** and retire R1. Everything about the data model rests on an
+   authored schema, and C2's date-range predicate now depends on that schema's
+   assumptions as well. This is the highest-value remaining action, and it is
+   offline-incompatible: it needs a real partition. It is also the first time the
+   DRDA path is exercised at all (R5).
+2. **Fix C3** — log admin mutations (actor, action, target, outcome). About twenty
+   lines, and the application's whole proposition is "trust this view of
+   production". Pair it with a migration path for the SQLite store, which
+   currently cannot evolve without a manual `ALTER`.
+3. **Fix C5/C6** — per-request caching of the master file. The page bound is now in
+   place, but a single render can still issue several full `findAllJobs()` reads;
+   the real fix is one cached snapshot per request, not per-method tuning.
+
+`req.txt` §9 question 1 — whether write support is ever wanted — still needs a
+decision rather than an implementation; §11 argues for keeping the app read-only.
+
+### Live updates (asked, not yet built)
+
+The timeline does not refresh without a page reload. The question was raised and
+the answer is deliberately "not yet, and not as a per-page timer":
+
+- **The look transfers; the mechanism does not.** The sssf visualizer polls with a
+  cursor against a local database. This app's equivalent poll would hit IBM i over
+  DRDA on every tick, per open tab — precisely the load risk R6 constrains.
+- **C6 is the prerequisite.** Once there is one cached snapshot with an adaptive
+  interval, a page timer can read the cache instead of the partition. Doing it
+  before that bakes in the anti-pattern.
+- **A partial swap is cheap and safe.** `/timeline` already renders from a URL-only
+  state (`from`, `to`, `scale`), so the chart region could be lifted into a
+  Thymeleaf fragment and re-fetched on window/scale change with no extra queries.
+- **Beware the moving chart.** Auto-refresh on a relative window moves the bars
+  under the reader. Any refresh must hold the window fixed, or a run that completed
+  two minutes ago silently shifts position.
+
+### Regenerating the screenshots in §4a
+
+The figures are generated, not hand-drawn. See `docs/tools/README.md` for the
+capture pipeline. The timeline figure (`17-timeline.png`) is captured with a
+**tall viewport**, not `fullPage`: the shared theme's
+`background-attachment: fixed` renders as a solid band in a full-page capture,
+which silently produced an unusable figure on the first attempt. If you add a
+figure, check the image, not just the exit code.
 
 ---
 
