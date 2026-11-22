@@ -1,5 +1,6 @@
 package com.example.ajs.repository;
 
+import com.example.ajs.domain.AjsDateDecoders;
 import com.example.ajs.domain.AjsJob;
 import com.example.ajs.domain.JobRun;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -126,10 +127,37 @@ public class JdbcAjsRepository implements AjsRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>{@code HSDTE}/{@code HSTME} are packed legacy numerics that cannot be
-     * compared against a SQL timestamp without provoking SQL0181/CPD4019 (the
-     * failure IBM documents for this file). The range filter therefore happens in
-     * Java, after decoding — the same approach {@link #findScheduledOn} takes.
+     * <h2>Why the date range is pushed into SQL</h2>
+     * The previous version of this method issued {@code SELECT ... FROM QAIJSHST}
+     * with no {@code WHERE} clause: it read the <em>entire</em> run history, moved
+     * it over DRDA, mapped every row in Java, and only then discarded all but the
+     * requested window. On a real partition that file grows without bound, so a
+     * single timeline page view cost more every month the system ran. This was
+     * design review finding C2.
+     *
+     * <p>It is tempting to conclude that the range cannot be pushed down at all,
+     * because {@code HSDTE} is a packed legacy numeric that raises SQL0181/CPD4019
+     * when compared against a SQL timestamp (risk R2). That conclusion is wrong in
+     * an important way. What cannot be done is <em>date arithmetic</em> in SQL.
+     * What can be done is a range comparison on the <em>encoded integers</em>,
+     * because CYYMMDD is numerically ordered within a century
+     * ({@code 1251120 < 1251121}). The window edges are therefore encoded in Java
+     * by {@link AjsDateDecoders#encodeCyymmdd(LocalDate)}, the century logic stays
+     * in its single containment boundary, and the database gets a selective,
+     * index-usable predicate.
+     *
+     * <p>The comparison is deliberately inclusive of the whole {@code from} and
+     * {@code to} days. The caller's contract is a half-open
+     * {@code [from, to)} on timestamps, so encoding only {@code to.toLocalDate()}
+     * would drop runs later the same day; the {@code <=} on the encoded end date
+     * keeps them in scope for the exact Java filter below. Widening the SQL range
+     * and narrowing in Java is the safe direction — it can only over-fetch a single
+     * day, never silently lose a run.
+     *
+     * <p>The {@code HSDTE IS NOT NULL} guard is belt-and-braces for the same reason
+     * as the {@code BETWEEN}: a null date fails a range comparison in SQL anyway,
+     * but stating it means the predicate reads the same way the Java filter below
+     * behaves.
      *
      * <p>Rows whose date is unplottable (null or sentinel) are dropped here rather
      * than mapped to a default time: a run with no position on a time axis cannot
@@ -147,10 +175,25 @@ public class JdbcAjsRepository implements AjsRepository {
                     "from must be strictly before to: " + from + " .. " + to);
         }
 
-        String sql = "SELECT " + JobRunRowMapper.SELECT_COLUMNS
-                + " FROM " + HISTORY + " h";
+        // Encode the window edges as CYYMMDD integers so the filter can be a range
+        // predicate. Inclusive on both ends: the caller's bound is half-open on
+        // timestamps, and the exact filter below is what makes it precise.
+        Integer fromDate = AjsDateDecoders.encodeCyymmdd(from.toLocalDate());
+        Integer toDate = AjsDateDecoders.encodeCyymmdd(to.toLocalDate());
 
-        return jdbc.query(sql, new JobRunRowMapper()).stream()
+        String sql = "SELECT " + JobRunRowMapper.SELECT_COLUMNS
+                + " FROM " + HISTORY + " h"
+                + " WHERE h.HSDTE IS NOT NULL"
+                + " AND h.HSDTE BETWEEN ? AND ?"
+                + " ORDER BY h.HSDTE, h.HSTME";
+
+        // The ORDER BY in SQL is not merely cosmetic: it lets the database use an
+        // index for the ordering instead of the driver materialising every row for
+        // a Java-side sort. The Java sort is retained below because it is the
+        // authority on the final order once decoding has happened — SQL orders by
+        // the packed value, which is the same order within a century but is not
+        // this method's contract.
+        return jdbc.query(sql, new JobRunRowMapper(), fromDate, toDate).stream()
                 .filter(run -> run.startedAt() != null)
                 .filter(run -> !run.startedAt().isBefore(from))
                 .filter(run -> run.startedAt().isBefore(to))

@@ -46,6 +46,7 @@ public class AuthBootstrap implements ApplicationRunner {
     private static final List<String[]> BUILT_IN_APPS = List.of(
             new String[]{"Overview", "overview", "gauge"},
             new String[]{"Jobs due", "calendar", "calendar-clock"},
+            new String[]{"Timeline", "timeline", "activity"},
             new String[]{"Failures", "failures", "alert-triangle"},
             new String[]{"Job inventory", "jobs", "list"},
             new String[]{"Needs attention", "attention", "eye"});

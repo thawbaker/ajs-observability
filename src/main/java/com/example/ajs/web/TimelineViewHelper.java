@@ -4,8 +4,10 @@ import com.example.ajs.domain.AjsJob;
 import com.example.ajs.domain.JobRun;
 import org.springframework.stereotype.Component;
 
+import java.text.NumberFormat;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Locale;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
@@ -88,7 +90,39 @@ public class TimelineViewHelper {
         if (run.stillRunning()) {
             return "tl-running";
         }
-        return run.outcome() == AjsJob.LastOutcome.ABNORMAL ? "tl-abnormal" : "tl-normal";
+        if (run.outcome() == AjsJob.LastOutcome.ABNORMAL) {
+            return "tl-abnormal";
+        }
+        return isLongRunning(run) ? "tl-long" : "tl-normal";
+    }
+
+    /**
+     * Threshold above which a completed run is drawn as long-running.
+     *
+     * <p>An hour is the threshold because of what the view is for. It separates
+     * "finished as expected" from "finished, but late enough to wonder" — the
+     * nightly extract that normally takes two minutes and took fifty is worth
+     * seeing at a glance, and on a timeline it is also the bar that will dominate
+     * the plot and crowd its neighbours.
+     *
+     * <p>Deliberately a constant rather than a per-job expectation: AJS does not
+     * record a job's expected duration in the master file, so any per-job
+     * threshold would be invented. One blunt line that is honestly the same for
+     * every job beats a per-job rule that looks authoritative and is not.
+     */
+    static final long LONG_RUNNING_SECONDS = 3600;
+
+    /**
+     * Whether a completed run took long enough to be worth flagging.
+     *
+     * <p>Not applicable to a still-running job, which has no duration to compare
+     * and is already drawn distinctly.
+     */
+    public boolean isLongRunning(JobRun run) {
+        if (run == null || run.stillRunning()) {
+            return false;
+        }
+        return run.elapsedSeconds() != null && run.elapsedSeconds() > LONG_RUNNING_SECONDS;
     }
 
     /**
@@ -146,6 +180,63 @@ public class TimelineViewHelper {
     /** Rounds to two places so the emitted CSS stays short and stable. */
     public double round2(double value) {
         return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).doubleValue();
+    }
+
+    /**
+     * Groups digits for display, e.g. {@code 1440 -> "1,440"}.
+     *
+     * <p>Used by the run-count figures. A five-digit run count is common on a wide
+     * window and ungrouped digits are genuinely hard to read at a glance, which
+     * matters here: the whole point of these numbers is that the reader notices
+     * when a total is large.
+     */
+    public String thousands(long value) {
+        return NumberFormat.getIntegerInstance(Locale.UK).format(value);
+    }
+
+    /**
+     * Colour for a lane, derived from the job's application group.
+     *
+     * <p>Hue is a hash of the group name, so every job in one group shares a
+     * colour and the colour is stable across requests without being stored
+     * anywhere. Stability is the point: a lane that changed colour between page
+     * loads would make the chart re-read from scratch every time, which defeats the
+     * purpose of a dense view.
+     *
+     * <p>Returns an HSL triple at a fixed saturation and lightness rather than an
+     * arbitrary hex, so every lane colour has the same weight against the dark
+     * background and none of them can come out unreadable.
+     */
+    public String laneColor(String applicationGroup) {
+        String key = applicationGroup == null || applicationGroup.isBlank()
+                ? "(ungrouped)"
+                : applicationGroup;
+        // Math.abs on a possible Integer.MIN_VALUE would still be negative, hence
+        // the mask rather than abs. Golden-ratio stride spreads adjacent names.
+        int hash = Math.abs(key.hashCode() * 31) % 360;
+        return "hsl(" + hash + " 62% 66%)";
+    }
+
+    /**
+     * Whether a "now" marker belongs on this chart, and where.
+     *
+     * <p>Returns a percentage, or {@code null} when the window does not contain
+     * now — a marker outside the plot would be drawn clamped to an edge and would
+     * then read as a real position, which is worse than no marker.
+     *
+     * <p>The marker matters on this page more than on a typical chart. The window
+     * defaults to "the last 24 hours", so the right-hand edge moves with the clock,
+     * and without a reference line a reader cannot tell which bars are recent and
+     * which are simply far right.
+     */
+    public Double nowPercent(LocalDateTime from, LocalDateTime to, LocalDateTime now) {
+        if (from == null || to == null || now == null) {
+            return null;
+        }
+        if (now.isBefore(from) || !now.isBefore(to)) {
+            return null;
+        }
+        return round2(leftPercent(from, to, now));
     }
 
     private static long windowSeconds(LocalDateTime from, LocalDateTime to) {

@@ -13,6 +13,10 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.security.web.csrf.XorCsrfTokenRequestAttributeHandler;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
  * Spring Security wiring: stateless JWT-cookie authentication, role-gated
@@ -59,24 +63,44 @@ public class SecurityConfig {
                                            JwtAuthenticationFilter jwtAuthenticationFilter)
             throws Exception {
         http
-                // CSRF IS DISABLED, AND THIS IS A KNOWN WEAKNESS.
+                // CSRF protection is ON (design review finding C1, now fixed).
                 //
-                // An earlier version of this comment claimed there was "no HTML
-                // form POST from a browser session". That was wrong: there are ten
-                // browser form POSTs, including destructive admin actions
-                // (POST /admin/users/{id}/delete, /disabled, /role, and the app and
-                // permission forms). See NOTES.md, design review finding C1.
+                // This was previously disabled on a justification that was simply
+                // false — that there was "no HTML form POST from a browser session".
+                // There are ten browser form POSTs, including destructive admin
+                // actions (POST /admin/users/{id}/delete, /disabled, /role, plus the
+                // app and permission forms). See NOTES.md section 8.
                 //
-                // The only thing preventing cross-site forgery of those requests is
-                // the session cookie being set SameSite=Lax in AuthController. That
-                // mitigation is load-bearing and must not be relaxed to
-                // SameSite=None without first enabling CSRF here.
+                // The repository is CookieCsrfTokenRepository, NOT the default
+                // HttpSession-backed one, and that choice is load-bearing.
                 //
-                // The fix is small and worth doing: the templates are server-rendered
-                // Thymeleaf, so th:action injects the hidden _csrf field automatically
-                // and Spring Security's default token repository works unchanged.
-                // Re-enable csrf() and remove this comment.
-                .csrf(csrf -> csrf.disable())
+                // Using csrf(Customizer.withDefaults()) is the obvious fix and is
+                // wrong here: with sessionCreationPolicy(STATELESS) above, the
+                // default HttpSessionCsrfTokenRepository writes the token into a
+                // session that is never retained. The token still renders into every
+                // form, because th:action reads it during rendering, so the HTML looks
+                // perfectly correct while every submission 403s for a real browser.
+                // The cookie repository keeps the token client-side, which is the
+                // supported pairing for a stateless chain. HttpOnly is left off
+                // because the value must be readable to be replayed on the next
+                // request; the token is not a credential on its own.
+                //
+                // Every form in src/main/resources/templates uses th:action, so
+                // Thymeleaf injects the hidden _csrf field automatically and no
+                // template needed editing.
+                //
+                // SameSite=Lax on the session cookie (AuthController) remains in
+                // place as defence in depth, but it is no longer the only thing
+                // standing between an attacker and those ten endpoints. That matters
+                // because SameSite is a browser-side control that disappears the
+                // moment the cookie policy is relaxed for a cross-site deployment;
+                // this token check does not.
+                .csrf(csrf -> csrf
+                        .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                        // Force the token to be resolved on EVERY request, not just on
+                        // the unsafe one. See the note below: without this the cookie
+                        // is never written on a GET and no first POST can succeed.
+                        .csrfTokenRequestHandler(tokenRequestHandler()))
 
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -111,9 +135,84 @@ public class SecurityConfig {
                         .accessDeniedHandler((request, response, deniedException) ->
                                 response.sendError(403, "Forbidden")))
 
+                // Runs after CsrfFilter (which registers the attribute) and before
+                // the request reaches the view, so the cookie is on the response by
+                // the time anything is rendered.
+                .addFilterAfter(csrfCookieEnsuringFilter(),
+                        org.springframework.security.web.csrf.CsrfFilter.class)
+
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * Makes the CSRF token resolve eagerly, so the {@code XSRF-TOKEN} cookie is
+     * written on every response rather than only on an unsafe request.
+     *
+     * <p>This is required, and its absence was a real defect caught only by driving
+     * a real browser. Spring Security 6 defers token loading: the token is resolved
+     * when it is needed for an unsafe request, or when something reads the request
+     * attribute. Rendering the hidden {@code _csrf} field is enough to put a
+     * <em>valid-looking</em> token in the HTML — which is exactly why this hid so
+     * well — but with a stateless chain there is nothing to persist it to, so the
+     * cookie is never sent. A browser then has the form field and no cookie, the
+     * double-submit check fails, and <strong>every form on the site 403s</strong>
+     * while the pages look perfectly correct.
+     *
+     * <p>Setting {@code csrfRequestAttributeName} to {@code null} means the attribute
+     * name cannot be known without loading the token, so the token is loaded on
+     * every request and the cookie is written. This is the configuration Spring's
+     * own reference documents for exactly this case.
+     *
+     * <p>Note the two failures this single feature has produced, because they are
+     * the reason the comment is this long. First the token repository was the
+     * default session-backed one, which cannot work on a stateless chain at all.
+     * Then it was cookie-backed but still deferred, which fails on the first POST
+     * only. Both rendered a correct-looking form and passed the unit tests.
+     * {@code CsrfProtectionTest} now asserts the cookie is actually issued on a
+     * GET, which is the assertion that would have caught each of them.
+     */
+    private static XorCsrfTokenRequestAttributeHandler tokenRequestHandler() {
+        XorCsrfTokenRequestAttributeHandler handler = new XorCsrfTokenRequestAttributeHandler();
+        handler.setCsrfRequestAttributeName(null);
+        return handler;
+    }
+
+    /**
+     * Forces the CSRF token to be materialised, and therefore its cookie to be
+     * written, on <em>every</em> request.
+     *
+     * <p>Why this is needed rather than relying on the request handler alone, which
+     * was tried first and does not work. The repository is wrapped in
+     * {@code LazyCsrfTokenRepository.SaveOnAccessCsrfToken}, whose
+     * {@code saveTokenIfNecessary()} is called from {@code getToken()} and
+     * <strong>only</strong> from there — {@code getParameterName()} and
+     * {@code getHeaderName()} do not trigger it. The deferred handler calls
+     * {@code getParameterName()} to decide which request attribute to set, so it
+     * populates the attribute without ever persisting the cookie. Reading
+     * {@code getToken()} here is what actually writes it.
+     *
+     * <p>That distinction is invisible from the outside and is the reason this
+     * defect survived two rounds of fixing: the hidden {@code _csrf} field renders
+     * correctly either way, so every page looks right while the cookie is missing.
+     * The page then fails the double submit on its first POST.
+     */
+    private static OncePerRequestFilter csrfCookieEnsuringFilter() {
+        return new OncePerRequestFilter() {
+            @Override
+            protected void doFilterInternal(jakarta.servlet.http.HttpServletRequest request,
+                                            jakarta.servlet.http.HttpServletResponse response,
+                                            jakarta.servlet.FilterChain chain)
+                    throws jakarta.servlet.ServletException, java.io.IOException {
+                Object attribute = request.getAttribute(CsrfToken.class.getName());
+                if (attribute instanceof CsrfToken token) {
+                    // Accessing the value is the point: it is the call that persists.
+                    token.getToken();
+                }
+                chain.doFilter(request, response);
+            }
+        };
     }
 
     /**

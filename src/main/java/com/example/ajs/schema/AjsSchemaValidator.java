@@ -36,7 +36,7 @@ public class AjsSchemaValidator implements ApplicationRunner {
      * not derived from the mapper — so that adding a column to the mapper forces
      * a conscious update here too.
      */
-    static final Set<String> REQUIRED_MASTER_COLUMNS = Set.of(
+    public static final Set<String> REQUIRED_MASTER_COLUMNS = Set.of(
             "JMJOB", "JMSEQ", "JMGRP", "JMAPPL", "JMTEXT",
             "JMSCDNAM", "JMSCH", "JMCAL", "JMHCAL", "JMFCAL",
             "JMDTE", "JMTME",
@@ -44,7 +44,7 @@ public class AjsSchemaValidator implements ApplicationRunner {
             "JMUSER", "JMMSGQ", "JMMSGL", "JMRCYA",
             "JMSTS", "JMLRD", "JMLST", "JMLCC", "JMELAP");
 
-    static final Set<String> REQUIRED_COMMAND_COLUMNS = Set.of("CMJOB", "CMSEQ", "CMCMD");
+    public static final Set<String> REQUIRED_COMMAND_COLUMNS = Set.of("CMJOB", "CMSEQ", "CMCMD");
 
     private final JdbcTemplate jdbc;
     private final boolean failOnMissingColumns;

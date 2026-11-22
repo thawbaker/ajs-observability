@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -74,6 +75,7 @@ class AppPermissionEnforcementTest {
         // Make sure the routes this test exercises have registered apps.
         ensureApp("Overview", "overview");
         ensureApp("Jobs due", "calendar");
+        ensureApp("Timeline", "timeline");
         ensureApp("Failures", "failures");
         ensureApp("Job inventory", "jobs");
         ensureApp("Needs attention", "attention");
@@ -86,11 +88,35 @@ class AppPermissionEnforcementTest {
     void fullAccessByDefault() throws Exception {
         String token = signIn(ordinary.email());
 
-        for (String path : new String[]{"/overview", "/calendar", "/failures",
-                "/jobs", "/attention"}) {
+        for (String path : new String[]{"/overview", "/calendar", "/timeline",
+                "/failures", "/jobs", "/attention"}) {
             mockMvc.perform(get(path).cookie(cookie(token)))
                     .andExpect(status().isOk());
         }
+    }
+
+    @Test
+    @DisplayName("the timeline is a governable app, so it can be denied like any other")
+    void timelineCanBeDenied() throws Exception {
+        // The timeline was added to the navigation after the permission model was
+        // built, and was never registered as an app — so there was no deny row to
+        // create and no route in the map to check. An administrator could not
+        // restrict it at all, which made it the one dashboard whose permission
+        // control silently did not exist.
+        long timelineId = apps.findAppBySlug("timeline")
+                .orElseThrow(() -> new AssertionError(
+                        "timeline must be registered as a built-in app"))
+                .id();
+        apps.setBlockedAppIds(ordinary.id(), List.of(timelineId));
+
+        String token = signIn(ordinary.email());
+
+        mockMvc.perform(get("/timeline").cookie(cookie(token)))
+                .andExpect(status().isForbidden());
+
+        // The rest of the dashboard set is unaffected.
+        mockMvc.perform(get("/overview").cookie(cookie(token)))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -155,6 +181,45 @@ class AppPermissionEnforcementTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * A disabled app must be unreachable, not merely hidden from the navigation.
+     *
+     * <p>This is design review finding C4. Disabling an app in /admin/apps is an
+     * administrative act that reads as a control; if the route still answers 200,
+     * the control is cosmetic. Two distinct cases, and the second is the one that
+     * fails open today:
+     *
+     * <ul>
+     *   <li>disabled AND denied — already blocked by the denylist, so this passes
+     *       for the wrong reason;</li>
+     *   <li>disabled but NOT denied — the gap. {@code AppRepository.accessibleApps}
+     *       correctly excludes it from the navigation, but {@code
+     *       AppPermissionInterceptor} never consults {@code enabled}, so the URL
+     *       keeps working.</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("a disabled app is unreachable even with no deny row")
+    void disabledAppIsUnreachable() throws Exception {
+        long failuresId = apps.findAppBySlug("failures").orElseThrow().id();
+        apps.setBlockedAppIds(ordinary.id(), List.of());
+        apps.setAppEnabled(failuresId, false);
+        try {
+            String token = signIn(ordinary.email());
+
+            // Sanity: it is genuinely gone from the user's navigation.
+            assertThat(apps.accessibleApps(ordinary.id()))
+                    .as("a disabled app must not be listed as accessible")
+                    .extracting(App::slug)
+                    .doesNotContain("failures");
+
+            mockMvc.perform(get("/failures").cookie(cookie(token)))
+                    .andExpect(status().isForbidden());
+        } finally {
+            apps.setAppEnabled(failuresId, true);
+        }
+    }
+
     @Test
     @DisplayName("the denylist never blocks sign-in or administration routes")
     void authRoutesAreNotGovernedByDenylist() throws Exception {
@@ -183,6 +248,7 @@ class AppPermissionEnforcementTest {
 
     private String signIn(String email) throws Exception {
         var result = mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", email)
                         .param("password", PASSWORD))
                 .andReturn();

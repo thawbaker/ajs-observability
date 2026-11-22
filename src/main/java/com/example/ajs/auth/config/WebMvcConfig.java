@@ -29,8 +29,16 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 // Scoped to the dashboard routes explicitly. Sign-in, admin and
                 // actuator must never be subject to the denylist, or a
                 // misconfiguration could lock everyone out of the login page.
+                //
+                // Every path here must also appear in AppPermissionInterceptor's
+                // ROUTE_TO_SLUG map, and in AuthBootstrap.BUILT_IN_APPS. A route
+                // missing from THIS list is not governed at all, silently — the
+                // timeline was in that state, so it was the one dashboard no
+                // administrator could deny. Adding a dashboard means adding it in
+                // all three places; the enforcement test covers the timeline.
                 .addPathPatterns("/overview", "/overview/**",
                         "/calendar", "/calendar/**",
+                        "/timeline", "/timeline/**",
                         "/failures", "/failures/**",
                         "/jobs", "/jobs/**",
                         "/attention", "/attention/**");

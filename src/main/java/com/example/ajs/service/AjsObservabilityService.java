@@ -115,7 +115,7 @@ public class AjsObservabilityService {
      * view, so a job sits in the same relative position on both pages — moving
      * between them does not require re-finding a row.
      */
-    public List<TimelineLane> timeline(LocalDateTime from, LocalDateTime to) {
+    public TimelineResult timeline(LocalDateTime from, LocalDateTime to) {
         List<JobRun> runs = repository.findRunsBetween(from, to);
 
         Map<String, List<JobRun>> byJob = runs.stream()
@@ -125,16 +125,109 @@ public class AjsObservabilityService {
         // still appear (empty) for a job that was expected to run but did not.
         // Deriving lanes from history alone would silently hide that job, which is
         // the one case an operator most needs to see.
-        return repository.findAllJobs().stream()
+        List<TimelineLane> lanes = repository.findAllJobs().stream()
                 .map(job -> {
-                    List<JobRun> jobRuns = byJob.getOrDefault(
+                    List<JobRun> all = byJob.getOrDefault(
                             job.jobName().toUpperCase(), List.of());
-                    return new TimelineLane(job, jobRuns, gapsBetween(jobRuns));
+                    List<JobRun> shown = capPerLane(all);
+                    return new TimelineLane(job, shown, gapsBetween(shown),
+                            all.size() - shown.size());
                 })
                 .sorted(Comparator
                         .comparing((TimelineLane l) -> nullSafe(l.job().applicationGroup()))
                         .thenComparing(l -> l.job().jobName()))
                 .toList();
+
+        // Counted over EVERY run that lands on a lane, BEFORE capping. This is the
+        // subtle half of the bound: computing the totals from the drawn lanes
+        // instead would make a truncated job's failures and still-running runs
+        // disappear from the summary — a false all-clear produced by a display
+        // decision, which is precisely the failure this page must never have.
+        //
+        // The totals are gathered from the lanes' unattributed runs, not from the
+        // raw query result, because history rows whose job is absent from the
+        // master file have never appeared on this page: lanes come from the master
+        // file, so an orphan row has no lane to be drawn on. Folding those into the
+        // total would make omittedRuns() — which exists to mean "dropped by the
+        // cap" — also mean "orphaned", and the two call for different responses:
+        // the first says narrow the range, the second says the files disagree.
+        List<JobRun> allLaneRuns = new ArrayList<>();
+        for (TimelineLane lane : lanes) {
+            allLaneRuns.addAll(byJob.getOrDefault(
+                    lane.job().jobName().toUpperCase(), List.of()));
+        }
+
+        long failures = allLaneRuns.stream()
+                .filter(r -> r.outcome() == AjsJob.LastOutcome.ABNORMAL)
+                .count();
+        long running = allLaneRuns.stream().filter(JobRun::stillRunning).count();
+        long totalRuns = lanes.stream().mapToLong(TimelineLane::totalRuns).sum();
+        long drawnRuns = lanes.stream().mapToLong(l -> l.runs().size()).sum();
+
+        return new TimelineResult(lanes, totalRuns, drawnRuns, failures, running);
+    }
+
+    /**
+     * A rendered timeline window: the lanes to draw, plus totals for the whole
+     * window rather than only the drawn part.
+     *
+     * <p>Returning both is the point. The lanes are capped to keep the response
+     * bounded ({@link #MAX_RUNS_PER_LANE}), and the totals are deliberately not —
+     * so the summary line can say "200 of 1,440 runs shown" instead of quietly
+     * reporting 200 as the total. A monitor that understates activity when it is
+     * busiest is worse than one that is slow.
+     *
+     * @param totalRuns  every run in the window
+     * @param drawnRuns  runs actually rendered ({@code <= totalRuns})
+     * @param failures   abnormal runs across the whole window, drawn or not
+     * @param running    still-running jobs across the whole window, drawn or not
+     */
+    public record TimelineResult(List<TimelineLane> lanes, long totalRuns, long drawnRuns,
+                                 long failures, long running) {
+
+        /** Runs in the window that the page does not draw, because of the cap. */
+        public long omittedRuns() {
+            return totalRuns - drawnRuns;
+        }
+
+        /** Whether any lane had to drop older runs to stay within the cap. */
+        public boolean truncated() {
+            return omittedRuns() > 0;
+        }
+    }
+
+    /**
+     * Most runs drawn per job. The response size is what this bounds.
+     *
+     * <p>Why this exists rather than pagination: the timeline is a density view,
+     * and its bar positions are percentages <em>of the window</em>. Splitting runs
+     * across pages would not make it smaller — it would make it wrong. A page of
+     * runs drawn against the full window would leave the plot looking almost empty
+     * for a job that actually ran constantly, which is the exact misreading this
+     * page exists to prevent. The same objection kills pagination of the detail
+     * table: "gap from prior" is sequential by definition, so the first row of any
+     * page after the first has no truthful value.
+     *
+     * <p>So the bound is applied per lane, keeping the <em>most recent</em> runs.
+     * Recency is the right end to keep: an operator reading a timeline is asking
+     * "what is it doing now", and the newest runs are the ones that answer it.
+     * Discarding the oldest is also what keeps the plot legible — the bars that
+     * survive are the ones in the right-hand, most-recently-viewed part of the
+     * window.
+     *
+     * <p>A truncated lane is <strong>reported</strong>, not silently shortened
+     * ({@link TimelineLane#omittedRuns()}), and the page states the figure. Silent
+     * truncation would understate the run count and could hide failures — a false
+     * all-clear, which is the one outcome worse than a slow page.
+     */
+    static final int MAX_RUNS_PER_LANE = 200;
+
+    /** Keeps the newest {@value #MAX_RUNS_PER_LANE} runs; order is preserved. */
+    private static List<JobRun> capPerLane(List<JobRun> runs) {
+        if (runs.size() <= MAX_RUNS_PER_LANE) {
+            return runs;
+        }
+        return List.copyOf(runs.subList(runs.size() - MAX_RUNS_PER_LANE, runs.size()));
     }
 
     /**
@@ -181,12 +274,29 @@ public class AjsObservabilityService {
      *
      * <p>{@code gaps} is index-aligned with {@code runs}; its first element is
      * always null.
+     *
+     * <p>{@code omittedRuns} is how many older runs this lane had in the window
+     * but did not draw, because {@link #MAX_RUNS_PER_LANE} was reached. It is a
+     * count and not a boolean on purpose: the page reports the exact figure, so a
+     * truncated lane reads as "200 of 1,440 shown" rather than as a smaller total.
+     * Zero for every lane in the ordinary case.
      */
-    public record TimelineLane(AjsJob job, List<JobRun> runs, List<Long> gaps) {
+    public record TimelineLane(AjsJob job, List<JobRun> runs, List<Long> gaps,
+                               int omittedRuns) {
 
         /** Whether this job was expected to run in the window but produced no run. */
         public boolean expectedButDidNotRun() {
             return runs.isEmpty() && job.ready();
+        }
+
+        /** Whether this lane had to drop older runs to stay within the cap. */
+        public boolean truncated() {
+            return omittedRuns > 0;
+        }
+
+        /** Total runs in the window, including any not drawn. */
+        public int totalRuns() {
+            return runs.size() + omittedRuns;
         }
     }
 

@@ -1,0 +1,25 @@
+-- 05 — does the application's own driver path work? (Risk R5)
+--
+-- The SQL above proves the schema. This proves the thing the application actually
+-- depends on: jt400 over DRDA to the host server. Run it from the server that
+-- will host the application, not from the host itself — a local connection proves
+-- nothing about the network path.
+--
+-- This is a shell command, not SQL. Save the transcript as out/05-drda.txt.
+
+-- 1. Is the host server reachable? (port 8471 database, 446 is the older DRDA port)
+--    Run from the application server:
+--      nc -zv <host> 8471
+--      nc -zv <host> 446
+--
+-- 2. Does the JDBC URL the application uses connect?
+--      ./gradlew bootRun --args='--spring.profiles.active=ibmi'
+--    (after adding src/main/resources/application-ibmi.yml, see NOTES.md §12b)
+--    A successful start logs "AJS schema validation passed" or a precise list of
+--    missing columns. Either is the answer; a hang is also an answer.
+--
+-- 3. If it starts, check the one view that reads the most data:
+--      curl -s -b jar localhost:8080/timeline | head -c 500
+--
+-- 4. Record the elapsed time for a 24h timeline window. That number replaces the
+--    "measured at 200,000 bars" estimate in NOTES.md §7 with a real one.

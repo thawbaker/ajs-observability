@@ -36,6 +36,73 @@ class AjsDateDecodersTest {
             assertThat(AjsDateDecoders.decodeCyymmdd(raw)).contains(expected);
         }
 
+        // --- encodeCyymmdd: the inverse, used to bound the history query ---
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource({
+                "2025-11-03, 1251103",
+                "2000-01-01, 1000101",
+                "2024-02-29, 1240229",
+                // Written without the leading zero, as in the decoder test above:
+                // JUnit's CSV-to-int conversion does not accept "0991231", and the
+                // numeric value 991231 is identical (century flag 0).
+                "1999-12-31, 991231",
+                "1990-01-01, 900101",
+        })
+        void encodesValidDates(LocalDate date, int expected) {
+            assertThat(AjsDateDecoders.encodeCyymmdd(date)).isEqualTo(expected);
+        }
+
+        @Test
+        @DisplayName("encoding is the exact inverse of decoding, on both sides of 2000")
+        void encodeDecodeRoundTrips() {
+            // The history query compares ENCODED integers, so a rounding error in
+            // either direction would silently shift a window edge and drop or
+            // include a day of runs. Round-tripping is the property that makes the
+            // bounded query safe, so it is asserted directly.
+            for (LocalDate date : new LocalDate[]{
+                    LocalDate.of(1999, 12, 31),
+                    LocalDate.of(2000, 1, 1),
+                    LocalDate.of(2025, 11, 3),
+                    LocalDate.of(2099, 12, 31)}) {
+                Integer encoded = AjsDateDecoders.encodeCyymmdd(date);
+                assertThat(AjsDateDecoders.decodeCyymmdd(encoded))
+                        .as("round trip for %s via %s", date, encoded)
+                        .contains(date);
+            }
+        }
+
+        @Test
+        @DisplayName("the encoded value is numerically ordered, which is what makes BETWEEN valid")
+        void encodingPreservesOrderingWithinACentury() {
+            // This is the assumption the SQL range predicate rests on. If it were
+            // false, BETWEEN would filter incorrectly rather than raise an error.
+            int earlier = AjsDateDecoders.encodeCyymmdd(LocalDate.of(2025, 11, 20));
+            int later = AjsDateDecoders.encodeCyymmdd(LocalDate.of(2025, 11, 21));
+            int newYearsEve = AjsDateDecoders.encodeCyymmdd(LocalDate.of(2025, 12, 31));
+
+            assertThat(earlier).isLessThan(later);
+            assertThat(later).isLessThan(newYearsEve);
+        }
+
+        @Test
+        @DisplayName("null encodes to null, matching the null-capable column")
+        void nullEncodesToNull() {
+            assertThat(AjsDateDecoders.encodeCyymmdd(null)).isNull();
+        }
+
+        @Test
+        @DisplayName("a year outside 1900..2099 is rejected rather than mis-encoded")
+        void yearOutsideRepresentableRangeThrows() {
+            // The century flag is a single digit, so 2100 and 1899 cannot be
+            // represented. Failing loudly is the point: a silently wrong century
+            // would put a query bound in the wrong era and return nothing.
+            assertThatThrownBy(() -> AjsDateDecoders.encodeCyymmdd(LocalDate.of(2100, 1, 1)))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> AjsDateDecoders.encodeCyymmdd(LocalDate.of(1899, 12, 31)))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
         @Test
         @DisplayName("a leading zero century flag decodes to the 1900s")
         void leadingZeroCenturyFlagIs1900s() {

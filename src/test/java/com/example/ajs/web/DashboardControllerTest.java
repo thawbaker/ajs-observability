@@ -151,6 +151,72 @@ class DashboardControllerTest {
     }
 
     @Test
+    @DisplayName("an over-wide window is narrowed and the narrowing is stated, not silent")
+    void overWideWindowIsNarrowedAndExplained() throws Exception {
+        // The page bound, not the query bound: every run is a bar and a table row,
+        // so the response grows with the window width. A five-year request must not
+        // be served as-is, and it must not 400 either — on a monitoring tool a 400
+        // is a support call. It is narrowed, and the page says so.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2020-01-01T00:00")
+                        .param("to", "2025-01-01T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("wider than the")))
+                .andExpect(content().string(containsString("maximum")))
+                // The page still rendered in full, not truncated mid-template.
+                .andExpect(content().string(containsString("</html>")));
+
+        // And the effective window really was reduced to the cap.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2020-01-01T00:00")
+                        .param("to", "2025-01-01T00:00")
+                        .with(asUser))
+                .andExpect(model().attribute("from",
+                        java.time.LocalDateTime.of(2025, 1, 1, 0, 0)
+                                .minus(DashboardController.MAX_WINDOW)));
+    }
+
+    @Test
+    @DisplayName("a window at or under the maximum is served unchanged, with no warning")
+    void windowWithinMaximumIsNotNarrowed() throws Exception {
+        // The guard must not fire on ordinary use. A 31-day window is allowed; the
+        // boundary case is checked so an off-by-one in the comparison cannot
+        // silently shorten every legitimate request.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2025-11-01T00:00")
+                        .param("to", "2025-11-20T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("warning", (Object) null));
+
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2025-11-01T00:00")
+                        .param("to", "2025-12-02T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("warning", (Object) null));
+    }
+
+    @Test
+    @DisplayName("the timeline page reports truncation instead of an understated total")
+    void truncationIsReportedOnThePage() throws Exception {
+        // Not truncated in this ordinary fixture window: the totals must reconcile
+        // with the bars, and no notice should appear. The truncated rendering path
+        // is covered at the service tier, where a 200+ run lane can be built
+        // without seeding one into the shared fixture.
+        mockMvc.perform(get("/timeline")
+                        .param("from", "2025-11-20T00:00")
+                        .param("to", "2025-11-21T00:00")
+                        .with(asUser))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("runsTruncated", false))
+                .andExpect(model().attribute("omittedRuns", 0L))
+                .andExpect(content().string(
+                        org.hamcrest.Matchers.not(containsString("are not drawn"))));
+    }
+
+    @Test
     @DisplayName("timeline over a window with no runs says so explicitly")
     void timelineEmptyWindowIsExplicit() throws Exception {
         // A blank chart could mean "no runs" or "the query failed". The page must

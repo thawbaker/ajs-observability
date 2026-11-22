@@ -64,6 +64,23 @@
             </span>
         </div>
 
+        <!--
+          Truncation is stated, never silent. The counters above cover the whole
+          window (they are computed before the per-lane cap), so this note is what
+          reconciles them with the number of bars actually drawn. Without it the
+          chart would look complete while showing a fraction of the runs, and a
+          missing run is indistinguishable from a run that never happened — the
+          one misreading this page must not permit.
+        -->
+        <div class="note" th:if="${runsTruncated}">
+            Showing the most recent
+            <span th:text="${@timelineView.thousands(drawnRuns)}">0</span> of
+            <span th:text="${@timelineView.thousands(totalRuns)}">0</span> runs in this
+            window (<span th:text="${@timelineView.thousands(omittedRuns)}">0</span> older
+            runs per job are not drawn). The counts above cover the whole window.
+            Narrow the range to see every run.
+        </div>
+
         <!-- Empty state must be explicit: a blank chart could mean "no runs" or
              "the query failed", and conflating those is how a monitor loses trust. -->
         <div class="empty tl-empty" th:if="${totalRuns == 0}">
@@ -79,6 +96,10 @@
             <div class="tl-gutter">
                 <div class="tl-axis-space"></div>
                 <div class="tl-row tl-row-hdr" th:each="lane : ${lanes}">
+                    <!-- The lane's colour is a hash of its application group, so
+                         every job in a group reads as one band down the chart. -->
+                    <span class="tl-dot"
+                          th:style="'background: ' + ${@timelineView.laneColor(lane.job().applicationGroup())}"></span>
                     <span class="tl-job" th:text="${lane.job().jobName()}">JOB</span>
                     <span class="tl-grp" th:text="${lane.job().applicationGroup()} ?: ''">GRP</span>
                 </div>
@@ -95,7 +116,7 @@
                         <th:block th:each="run, it : ${lane.runs()}">
                             <div class="tl-bar"
                                  th:classappend="${@timelineView.barClass(run)}"
-                                 th:style="'left: ' + ${@timelineView.round2(@timelineView.leftPercent(from, to, run.startedAt()))} + '%; width: ' + ${@timelineView.round2(@timelineView.widthPercent(from, to, run))} + '%'"
+                                 th:style="'left: ' + ${@timelineView.round2(@timelineView.leftPercent(from, to, run.startedAt()))} + '%; width: ' + ${@timelineView.round2(@timelineView.widthPercent(from, to, run))} + '%; --bar: ' + ${@timelineView.laneColor(lane.job().applicationGroup())} + '; animation-delay: ' + ${it.index < 60 ? (it.index * 18) : 0} + 'ms'"
                                  th:attr="title=${run.jobName() + ' — ' + #temporals.format(run.startedAt(), 'd MMM HH:mm:ss') + ' — ' + run.durationDisplay()}">
                                 <span class="tl-lbl" th:text="${run.durationDisplay()}">0s</span>
                             </div>
@@ -107,6 +128,14 @@
                         <div class="tl-norun" th:if="${lane.expectedButDidNotRun()}"
                              title="Ready, but no run in this window">not run</div>
                     </div>
+                    <!-- "Now" reference line. Only rendered when the window
+                         actually contains now — see nowPercent for why an
+                         out-of-window marker would be worse than none. -->
+                    <div class="tl-now"
+                         th:if="${@timelineView.nowPercent(from, to, now) != null}"
+                         th:style="'left: ' + ${@timelineView.nowPercent(from, to, now)} + '%'">
+                        <span>now</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -114,6 +143,7 @@
         <div class="tl-legend" th:unless="${totalRuns == 0}">
             <span><i class="tl-sw tl-normal"></i>Normal</span>
             <span><i class="tl-sw tl-abnormal"></i>Abnormal</span>
+            <span><i class="tl-sw tl-long"></i>Over 1h</span>
             <span><i class="tl-sw tl-running"></i>Still running</span>
             <span><i class="tl-sw tl-norun"></i>Ready, no run</span>
         </div>
@@ -231,23 +261,37 @@
     .tl-presets { margin-bottom: 18px; font-size: 12px; color: var(--muted);
                   display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
 
-    .tl-shell { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    .tl-shell { background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
                 overflow: hidden; margin-bottom: 28px; }
     .tl-head { display: flex; align-items: baseline; gap: 14px; padding: 12px 16px;
                border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-    .tl-summary { color: var(--muted); font-size: 12px; margin-left: auto; }
+    /* The window bounds and the counts are data, so they are monospaced: the
+       figures then line up with the axis and the table below. */
+    .tl-head strong { font-family: var(--mono); font-size: 13px; }
+    .tl-summary { color: var(--muted); font-size: 12px; margin-left: auto;
+                  font-family: var(--mono); }
+    .tl-summary span { color: var(--fg); }
     .tl-empty { margin: 16px; }
 
-    .tl-chart { display: grid; grid-template-columns: 200px 1fr; }
+    .tl-chart { display: grid; grid-template-columns: 210px 1fr; }
     .tl-gutter { border-right: 1px solid var(--line); }
     .tl-axis-space { height: 34px; border-bottom: 1px solid var(--line); }
-    .tl-row { height: 26px; display: flex; align-items: center; gap: 6px;
-              padding: 0 12px; font-size: 12px; border-bottom: 1px solid #202836;
+    .tl-row { height: var(--row-h); display: flex; align-items: center; gap: 6px;
+              padding: 0 12px; font-size: 12px;
+              border-bottom: 1px solid rgba(34, 43, 61, .55);
               white-space: nowrap; overflow: hidden; }
-    .tl-row:hover { background: #161d26; }
+    .tl-row:hover { background: rgba(19, 26, 38, .7); }
     .tl-row.tl-missing .tl-job { color: var(--warn); }
-    .tl-job { overflow: hidden; text-overflow: ellipsis; }
-    .tl-grp { color: var(--muted); font-size: 11px; margin-left: auto; }
+    /* Job names are data: monospaced so the column reads as one aligned block
+       rather than as ragged prose. */
+    .tl-job { font-family: var(--mono); font-size: 12px;
+              overflow: hidden; text-overflow: ellipsis; }
+    .tl-grp { color: var(--faint); font-size: 10px; margin-left: auto;
+              text-transform: uppercase; letter-spacing: .06em; }
+    /* The lane's group colour, echoed from the bar hue. A small leading dot
+       makes the grouping legible without colouring the whole row. */
+    .tl-dot { width: 7px; height: 7px; border-radius: 50%; flex: none;
+              box-shadow: 0 0 10px currentColor; }
 
     .tl-plot { position: relative; overflow-x: auto; }
     .tl-axis { position: relative; height: 34px; border-bottom: 1px solid var(--line);
@@ -263,13 +307,61 @@
        heights are deliberately identical to .tl-row. */
     .tl-plot .tl-row { position: relative; }
 
-    .tl-bar { position: absolute; top: 6px; height: 14px; border-radius: 3px;
-              background: var(--ok); min-width: 2px; }
-    .tl-bar.tl-normal { background: var(--ok); }
-    .tl-bar.tl-abnormal { background: var(--bad); }
-    .tl-bar.tl-running { background: linear-gradient(90deg, var(--accent) 0 55%,
-                          rgba(74,158,255,.28) 55% 100%); }
-    .tl-bar:hover { outline: 2px solid var(--fg); outline-offset: 1px; z-index: 5; }
+    /*
+      A bar's left edge is its start time and its width is its duration — the
+      width is the meaning, not a decoration. So the entrance animation grows the
+      bar from its left edge rather than fading it in: the movement itself states
+      "this took that long", and the chart assembles as a duration picture.
+
+      animation-delay is set inline from the run index, capped (the template
+      passes 0 beyond the first 60) so a busy window does not turn into a
+      multi-second cascade. A delayed bar still has its geometry from the first
+      frame, so nothing is hidden if the animation never runs — which matters,
+      because the page must be complete with scripting and animations disabled.
+    */
+    @keyframes tl-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+    .tl-bar { position: absolute; top: 8px; height: 13px; border-radius: 3px;
+              min-width: 3px;
+              transform-origin: left center;
+              animation: tl-grow .38s cubic-bezier(.2, .8, .3, 1) backwards;
+              box-shadow: 0 0 0 1px rgba(0, 0, 0, .35); }
+    /* Normal runs take the LANE colour, so a job's runs form a visible band. */
+    .tl-bar.tl-normal { background: linear-gradient(180deg,
+                          color-mix(in srgb, var(--bar, var(--ok)) 78%, #fff 22%),
+                          var(--bar, var(--ok))); }
+    /* Abnormal and long are semantic, not group-based, so they override the lane
+       hue: an exception should never be camouflaged by its group's colour. */
+    .tl-bar.tl-abnormal {
+        background: linear-gradient(180deg, #ff8a83, var(--bad));
+        box-shadow: 0 0 0 1px rgba(255, 111, 103, .55),
+                    0 0 14px rgba(255, 111, 103, .30);
+    }
+    .tl-bar.tl-long {
+        background: repeating-linear-gradient(45deg,
+                      var(--warn) 0 5px, rgba(232, 182, 74, .42) 5px 10px);
+        box-shadow: 0 0 0 1px rgba(232, 182, 74, .5);
+    }
+    /* Still running: solid then a fading tail, because the end is unknown. */
+    .tl-bar.tl-running {
+        background: linear-gradient(90deg, var(--accent) 0 55%,
+                      rgba(108, 182, 255, .22) 55% 100%);
+        box-shadow: 0 0 0 1px rgba(108, 182, 255, .5),
+                    0 0 14px rgba(108, 182, 255, .25);
+        animation: tl-grow .38s cubic-bezier(.2, .8, .3, 1) backwards,
+                   tl-pulse 2.4s ease-in-out 1s infinite;
+    }
+    @keyframes tl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .62; } }
+
+    .tl-bar:hover { outline: 2px solid var(--fg); outline-offset: 1px; z-index: 6;
+                    animation-play-state: paused; }
+
+    /* "Now" line: the window normally ends at the current time, so without this
+       a reader cannot tell recent bars from merely far-right ones. */
+    .tl-now { position: absolute; top: 34px; bottom: 0; width: 0; z-index: 5;
+              border-left: 2px dashed var(--warn); pointer-events: none; }
+    .tl-now span { position: absolute; top: -14px; left: 3px; font-size: 10px;
+                   color: var(--warn); letter-spacing: .04em; }
     .tl-lbl { position: absolute; left: calc(100% + 6px); top: -2px; font-size: 10px;
               color: var(--muted); white-space: nowrap; }
     .tl-norun { position: absolute; left: 8px; top: 6px; font-size: 10px;
@@ -280,10 +372,24 @@
                  border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
     .tl-sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
              margin-right: 6px; vertical-align: -1px; }
-    .tl-sw.tl-normal { background: var(--ok); }
+    /* The normal swatch shows the group hue, so the legend explains what the
+       lane colours on the chart actually represent. */
+    .tl-sw.tl-normal { background: linear-gradient(180deg, var(--violet), #6f7fe0); }
     .tl-sw.tl-abnormal { background: var(--bad); }
+    .tl-sw.tl-long { background: repeating-linear-gradient(45deg,
+                        var(--warn) 0 4px, rgba(232, 182, 74, .42) 4px 8px); }
     .tl-sw.tl-running { background: var(--accent); }
     .tl-sw.tl-norun { background: transparent; border: 1px dashed var(--warn); }
+
+    /* The bar's duration label is quiet chrome, not content, and it is the first
+       thing to go when bars crowd each other. */
+    .tl-lbl { color: var(--faint); }
+
+    /* Honour a user who has asked for less motion. The bars keep their geometry
+       either way, so the chart is fully readable without the entrance. */
+    @media (prefers-reduced-motion: reduce) {
+        .tl-bar, .tl-bar.tl-running { animation: none; }
+    }
 </style>
 </body>
 </html>

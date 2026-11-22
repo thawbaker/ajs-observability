@@ -77,6 +77,54 @@ public final class AjsDateDecoders {
     }
 
     /**
+     * Encodes a date as {@code CYYMMDD} — the exact inverse of
+     * {@link #decodeCyymmdd(Integer)}.
+     *
+     * <p>This exists so a query can be <em>bounded</em> without doing date
+     * arithmetic in SQL. {@code QAIJSHST.HSDTE} is a packed legacy numeric that
+     * cannot be compared against a SQL timestamp (SQL0181/CPD4019, risk R2), and
+     * the timeline previously worked around that by reading the entire history
+     * file and filtering in Java. Encoding the window edges here instead lets the
+     * database restrict the rows with a range predicate on the packed integers —
+     * which are numerically ordered within a century, {@code 1251120 < 1251121} —
+     * while all the century logic stays in this one class.
+     *
+     * <p>Note where the encode/decode pairing earns its keep: because the range
+     * is compared on encoded values, the filter is only correct if this method is
+     * genuinely the inverse of the decoder. A mismatch would silently shift a
+     * window edge and drop or include a day of history, which is the failure mode
+     * this class exists to prevent. {@code AjsDateDecodersTest} pins the round trip
+     * on both sides of the century boundary.
+     *
+     * @param date the date to encode, or {@code null}
+     * @return 7-digit CYYMMDD, or {@code null} when {@code date} is null
+     * @throws IllegalArgumentException if the year is outside 1900..2099, which
+     *         the single-digit century flag cannot represent
+     */
+    public static Integer encodeCyymmdd(LocalDate date) {
+        if (date == null) {
+            return null;
+        }
+        int year = date.getYear();
+        int centuryFlag;
+        int yy;
+        if (year >= 1900 && year <= 1999) {
+            centuryFlag = 0;
+            yy = year - 1900;
+        } else if (year >= 2000 && year <= 2099) {
+            centuryFlag = 1;
+            yy = year - 2000;
+        } else {
+            throw new IllegalArgumentException(
+                    "Year " + year + " is outside the CYYMMDD range 1900..2099");
+        }
+        return centuryFlag * 1_000_000
+                + yy * 10_000
+                + date.getMonthValue() * 100
+                + date.getDayOfMonth();
+    }
+
+    /**
      * Decodes a {@code YYMMDD} value, e.g. {@code 251103} -> 2025-11-03.
      *
      * <p>Two-digit years are inherently ambiguous. The rule used here is the one

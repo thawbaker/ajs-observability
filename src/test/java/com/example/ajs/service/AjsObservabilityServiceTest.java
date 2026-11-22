@@ -157,7 +157,7 @@ class AjsObservabilityServiceTest {
 
         List<AjsObservabilityService.TimelineLane> lanes =
                 service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
-                                 LocalDateTime.of(2025, 11, 21, 0, 0));
+                                 LocalDateTime.of(2025, 11, 21, 0, 0)).lanes();
 
         assertThat(lanes).hasSize(2);
         assertThat(lanes).extracting(l -> l.job().jobName())
@@ -208,6 +208,153 @@ class AjsObservabilityServiceTest {
         assertThat(inFlight.stillRunning()).isTrue();
         assertThat(inFlight.duration()).isEmpty();
         assertThat(inFlight.durationDisplay()).isEqualTo("running");
+    }
+
+    // ---------------------------------------------------------------------
+    // Timeline response bound: per-lane run cap and honest totals.
+    // ---------------------------------------------------------------------
+
+    @Test
+    @DisplayName("a lane is capped so the response cannot grow without limit")
+    void laneIsCappedToMostRecentRuns() {
+        // 1,440 runs is a minutely job over a day — entirely plausible, and the
+        // exact case that put an unbounded number of bars into one page.
+        int total = AjsObservabilityService.MAX_RUNS_PER_LANE + 500;
+        List<JobRun> runs = new java.util.ArrayList<>();
+        for (int i = 0; i < total; i++) {
+            runs.add(run("BUSY", 1,
+                    LocalDateTime.of(2025, 11, 20, 0, 0).plusMinutes(i), 30, "N"));
+        }
+        when(repository.findAllJobs()).thenReturn(List.of(withApp("BUSY", "APP")));
+        when(repository.findRunsBetween(any(), any())).thenReturn(runs);
+
+        var result = service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0));
+
+        var lane = result.lanes().get(0);
+        assertThat(lane.runs()).hasSize(AjsObservabilityService.MAX_RUNS_PER_LANE);
+        assertThat(lane.omittedRuns()).isEqualTo(500);
+        assertThat(lane.totalRuns()).isEqualTo(total);
+        assertThat(lane.truncated()).isTrue();
+    }
+
+    @Test
+    @DisplayName("the cap keeps the NEWEST runs, not the oldest")
+    void capKeepsMostRecentRuns() {
+        // Recency is the end that matters on a monitoring page: "what is it doing
+        // now". Keeping the oldest would also push every bar to the left of the
+        // plot, leaving the recent edge empty and implying the job had stopped.
+        int total = AjsObservabilityService.MAX_RUNS_PER_LANE + 10;
+        List<JobRun> runs = new java.util.ArrayList<>();
+        for (int i = 0; i < total; i++) {
+            runs.add(run("BUSY", 1,
+                    LocalDateTime.of(2025, 11, 20, 0, 0).plusMinutes(i), 30, "N"));
+        }
+        when(repository.findAllJobs()).thenReturn(List.of(withApp("BUSY", "APP")));
+        when(repository.findRunsBetween(any(), any())).thenReturn(runs);
+
+        var lane = service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0)).lanes().get(0);
+
+        LocalDateTime newest = LocalDateTime.of(2025, 11, 20, 0, 0).plusMinutes(total - 1);
+        assertThat(lane.runs().get(lane.runs().size() - 1).startedAt()).isEqualTo(newest);
+        assertThat(lane.runs().get(0).startedAt())
+                .as("the oldest runs are the ones dropped")
+                .isEqualTo(newest.minusMinutes(AjsObservabilityService.MAX_RUNS_PER_LANE - 1));
+    }
+
+    @Test
+    @DisplayName("the failure count covers the whole window, including runs the cap dropped")
+    void failuresAreCountedBeforeCapping() {
+        // This is the assertion that matters most in this group. If the summary
+        // were computed from the drawn lanes, a truncated job's failures would
+        // vanish from the count while its bars looked complete — a false all-clear
+        // produced by a display decision. The failure here is deliberately placed
+        // in the OLDEST run, which is exactly what the cap discards.
+        int total = AjsObservabilityService.MAX_RUNS_PER_LANE + 50;
+        List<JobRun> runs = new java.util.ArrayList<>();
+        runs.add(run("BUSY", 1, LocalDateTime.of(2025, 11, 20, 0, 0), 30, "A"));
+        for (int i = 1; i < total; i++) {
+            runs.add(run("BUSY", 1,
+                    LocalDateTime.of(2025, 11, 20, 0, 0).plusMinutes(i), 30, "N"));
+        }
+        when(repository.findAllJobs()).thenReturn(List.of(withApp("BUSY", "APP")));
+        when(repository.findRunsBetween(any(), any())).thenReturn(runs);
+
+        var result = service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0));
+
+        assertThat(result.lanes().get(0).runs())
+                .as("precondition: the failing run was dropped from the drawing")
+                .noneSatisfy(r -> assertThat(r.outcome()).isEqualTo(AjsJob.LastOutcome.ABNORMAL));
+        assertThat(result.failures())
+                .as("the failure must still be counted, even though it is not drawn")
+                .isEqualTo(1);
+        assertThat(result.totalRuns()).isEqualTo(total);
+        assertThat(result.drawnRuns()).isEqualTo(AjsObservabilityService.MAX_RUNS_PER_LANE);
+        assertThat(result.omittedRuns()).isEqualTo(50);
+        assertThat(result.truncated()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a still-running job is counted even when its lane is truncated")
+    void runningIsCountedBeforeCapping() {
+        int total = AjsObservabilityService.MAX_RUNS_PER_LANE + 5;
+        List<JobRun> runs = new java.util.ArrayList<>();
+        runs.add(run("BUSY", 1, LocalDateTime.of(2025, 11, 20, 0, 0), null, null));
+        for (int i = 1; i < total; i++) {
+            runs.add(run("BUSY", 1,
+                    LocalDateTime.of(2025, 11, 20, 0, 0).plusMinutes(i), 30, "N"));
+        }
+        when(repository.findAllJobs()).thenReturn(List.of(withApp("BUSY", "APP")));
+        when(repository.findRunsBetween(any(), any())).thenReturn(runs);
+
+        assertThat(service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0)).running()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a history row for a job with no lane is not counted as an omission")
+    void orphanHistoryRowIsNotCountedAsOmited() {
+        // Lanes come from the master file, so a history row whose job is absent
+        // from it has never been drawn on this page. Counting it in totalRuns
+        // would make omittedRuns() mean two different things at once — "dropped by
+        // the cap" and "orphaned" — and those call for different responses: the
+        // first says narrow the range, the second says the files disagree. Only
+        // the cap may set omittedRuns().
+        when(repository.findAllJobs()).thenReturn(List.of(withApp("KNOWN", "APP")));
+        when(repository.findRunsBetween(any(), any())).thenReturn(List.of(
+                run("KNOWN", 1, LocalDateTime.of(2025, 11, 20, 1, 0), 60, "N"),
+                run("GHOST", 1, LocalDateTime.of(2025, 11, 20, 2, 0), 60, "A")));
+
+        var result = service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0));
+
+        assertThat(result.totalRuns())
+                .as("only runs that land on a lane count toward the total")
+                .isEqualTo(1);
+        assertThat(result.omittedRuns())
+                .as("an orphan row is not a truncation")
+                .isZero();
+        assertThat(result.truncated()).isFalse();
+        assertThat(result.failures())
+                .as("the orphan's failure is not attributed to any visible job")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("a window under the cap is not flagged as truncated")
+    void ordinaryWindowIsNotTruncated() {
+        when(repository.findAllJobs()).thenReturn(List.of(withApp("CALM", "APP")));
+        when(repository.findRunsBetween(any(), any())).thenReturn(List.of(
+                run("CALM", 1, LocalDateTime.of(2025, 11, 20, 1, 0), 60, "N")));
+
+        var result = service.timeline(LocalDateTime.of(2025, 11, 20, 0, 0),
+                LocalDateTime.of(2025, 11, 21, 0, 0));
+
+        assertThat(result.truncated()).isFalse();
+        assertThat(result.omittedRuns()).isZero();
+        assertThat(result.lanes().get(0).truncated()).isFalse();
     }
 
     private JobRun run(String name, int seq, LocalDateTime start, Integer elapsed, String cc) {

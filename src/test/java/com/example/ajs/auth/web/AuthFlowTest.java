@@ -18,6 +18,7 @@ import jakarta.servlet.http.Cookie;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -80,6 +81,7 @@ class AuthFlowTest {
     @DisplayName("signing in with correct credentials issues an auth-token cookie")
     void signInIssuesCookie() throws Exception {
         mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", ordinary.email())
                         .param("password", PASSWORD))
                 .andExpect(status().is3xxRedirection())
@@ -91,6 +93,7 @@ class AuthFlowTest {
     @DisplayName("the session cookie is HttpOnly, so JavaScript cannot read the token")
     void sessionCookieIsHttpOnly() throws Exception {
         mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", ordinary.email())
                         .param("password", PASSWORD))
                 .andExpect(cookie().httpOnly(JwtService.COOKIE_NAME, true));
@@ -100,6 +103,7 @@ class AuthFlowTest {
     @DisplayName("the cookie is signed and carries the role, but is only 24h long")
     void sessionCookieLifetime() throws Exception {
         mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", ordinary.email())
                         .param("password", PASSWORD))
                 .andExpect(cookie().maxAge(JwtService.COOKIE_NAME,
@@ -110,6 +114,7 @@ class AuthFlowTest {
     @DisplayName("a wrong password is refused and no cookie is issued")
     void wrongPasswordRefused() throws Exception {
         mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", ordinary.email())
                         .param("password", "definitely-wrong"))
                 .andExpect(status().isOk())
@@ -121,6 +126,7 @@ class AuthFlowTest {
     @DisplayName("an unknown email is refused")
     void unknownEmailRefused() throws Exception {
         mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", "nobody@nowhere.test")
                         .param("password", PASSWORD))
                 .andExpect(status().isOk())
@@ -136,6 +142,7 @@ class AuthFlowTest {
         users.setDisabled(disabled.id(), true);
 
         mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", disabled.email())
                         .param("password", PASSWORD))
                 .andExpect(status().isOk())
@@ -243,6 +250,7 @@ class AuthFlowTest {
         users.findByEmail("brand-new@test.local").ifPresent(u -> users.delete(u.id()));
 
         mockMvc.perform(post("/auth/sign-up")
+                        .with(csrf())
                         .param("email", "brand-new@test.local")
                         .param("password", PASSWORD)
                         .param("name", "Brand New"))
@@ -262,6 +270,7 @@ class AuthFlowTest {
     @DisplayName("sign-up refuses a short password")
     void signUpRefusesShortPassword() throws Exception {
         mockMvc.perform(post("/auth/sign-up")
+                        .with(csrf())
                         .param("email", "shorty@test.local")
                         .param("password", "short")
                         .param("name", "Shorty"))
@@ -273,6 +282,7 @@ class AuthFlowTest {
     @DisplayName("sign-up refuses a duplicate email")
     void signUpRefusesDuplicateEmail() throws Exception {
         mockMvc.perform(post("/auth/sign-up")
+                        .with(csrf())
                         .param("email", ordinary.email())
                         .param("password", PASSWORD)
                         .param("name", "Impostor"))
@@ -286,6 +296,7 @@ class AuthFlowTest {
         String token = signInAndGetToken(ordinary.email());
 
         mockMvc.perform(post("/auth/sign-out")
+                        .with(csrf())
                         .cookie(new Cookie(JwtService.COOKIE_NAME, token)))
                 .andExpect(status().is3xxRedirection())
                 .andExpect(redirectedUrl("/sign-in"))
@@ -312,6 +323,7 @@ class AuthFlowTest {
     /** Signs in through the real endpoint and returns the issued token. */
     private String signInAndGetToken(String email) throws Exception {
         var result = mockMvc.perform(post("/auth/sign-in")
+                        .with(csrf())
                         .param("email", email)
                         .param("password", PASSWORD))
                 .andExpect(status().is3xxRedirection())

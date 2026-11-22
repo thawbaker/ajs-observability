@@ -1,0 +1,30 @@
+# `ibmi` profile — a real IBM i, but with the readiness gate switched on.
+#
+# Why this exists as a separate profile when the default profile already talks to
+# a real host: the default profile *tolerates* schema drift. AjsSchemaValidator
+# logs the missing columns and the application starts anyway. That is the right
+# default for a host you have already inspected — a monitoring tool that refuses
+# to boot is worse than one that boots and shouts. It is the wrong default for the
+# FIRST connection to a partition whose layout has never been seen, because a
+# partial render looks like a working dashboard.
+#
+# This profile is that first connection. It refuses to start unless the schema
+# matches, so a drift problem surfaces as a failed start with a precise list of
+# missing columns rather than as a page that renders nothing.
+#
+#   ./gradlew bootRun --args='--spring.profiles.active=ibmi'
+#
+# Once DSPFFD has confirmed the layouts (NOTES.md §12b), either keep using this
+# profile in production or move to the default one; the difference is only whether
+# drift is fatal. See docs/host-capture/ for the scripted session.
+
+ajs:
+  schema-validation:
+    # Fail hard on drift, rather than logging and continuing.
+    enabled: true
+    fail-on-missing-columns: true
+
+logging:
+  level:
+    # The validator's output is the point of this profile; make sure it is visible.
+    com.example.ajs.schema: INFO

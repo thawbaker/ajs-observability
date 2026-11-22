@@ -6,20 +6,65 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title th:text="${title} + ' — AJS Observability'">AJS Observability</title>
     <style>
+        /*
+          Palette and surface tokens, adapted from the sssf visualizer
+          (../sssf/.pi/skills/sssf/apps/visualizer/src/style.css) so the two tools
+          read as a family.
+
+          The original names are all kept — --bg, --panel, --line, --fg, --muted,
+          --accent, --ok, --warn, --bad — because every template and the timeline
+          mockup reference them. Re-pointing the tokens lifts the whole app without
+          editing a single template, which keeps this diff reviewable.
+
+          Three deliberate borrowings from sssf, in descending order of weight:
+
+          1. MONO IS FOR DATA, SANS IS FOR VOICE. Job names, timestamps, durations
+             and counts get --mono; labels and prose get --sans. A column of aligned
+             digits is readable in a way proportional text is not, and the split
+             tells the eye which text is content rather than chrome.
+          2. A LAYERED SURFACE SCALE (--panel / --panel-2 / --panel-3 / --surface),
+             so nested regions differ by depth instead of by yet another border.
+          3. THE AURORA BACKGROUND: a fixed violet/cyan radial wash over a flat
+             base. Fixed attachment so it stays put while content scrolls over it.
+
+          What is NOT borrowed: sssf's Vue/Vite build step and its 500ms fetch
+          loop. This app has no build step and no JS requirement (NOTES.md §7), and
+          polling IBM i on a browser timer is the anti-pattern risk R6 warns about.
+        */
         :root {
-            --bg: #0f1419; --panel: #1a2029; --line: #2b3542;
-            --fg: #e6edf3; --muted: #8b98a5; --accent: #4a9eff;
-            --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+            --bg: #06080f; --panel: #0d1119; --panel-2: #131a26; --panel-3: #0a0e16;
+            --line: #232c3d; --line-soft: #222b3d;
+            --fg: #f2f5fa; --muted: #aabdd5; --faint: #8b9cb6;
+            --accent: #6cb6ff;
+            --ok: #4ade80; --warn: #e8b64a; --bad: #ff6f67;
+            --cyan: #5ad2dd; --violet: #94a3ff;
+            /* One surface recipe, shared by every card and panel. */
+            --surface: linear-gradient(180deg, #10141f 0%, #0b0f18 100%);
+            --sans: 'Play', 'Helvetica Neue', system-ui, -apple-system, sans-serif;
+            --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco,
+                    'Cascadia Mono', 'Roboto Mono', monospace;
+            --row-h: 28px;
         }
         * { box-sizing: border-box; }
         body {
-            margin: 0; background: var(--bg); color: var(--fg);
-            font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+            margin: 0; color: var(--fg);
+            font-family: var(--sans);
+            /* Readability floor: a monitoring page is read at a glance, often from
+               across a room, and 14px was working against that. */
+            font-size: 15px; line-height: 1.5;
+            background:
+                radial-gradient(1100px 700px at 8% -10%, rgba(148, 163, 255, .09), transparent 62%),
+                radial-gradient(1000px 720px at 102% 108%, rgba(90, 210, 221, .07), transparent 60%),
+                linear-gradient(180deg, #06080f 0%, #090d17 100%);
+            background-attachment: fixed;
+            min-height: 100vh;
         }
         header {
             border-bottom: 1px solid var(--line); padding: 14px 24px;
             display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap;
-            position: sticky; top: 0; background: var(--bg); z-index: 10;
+            position: sticky; top: 0; z-index: 10;
+            background: rgba(6, 8, 15, .88);
+            backdrop-filter: blur(8px);
         }
         header h1 { font-size: 16px; margin: 0; font-weight: 600; }
         header .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
@@ -30,17 +75,20 @@
         }
         nav a:hover { color: var(--fg); }
         nav a.active { color: var(--fg); border-bottom-color: var(--accent); }
-        main { padding: 24px; max-width: 1200px; }
+        main { padding: 24px; max-width: 1280px; }
         h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
         .cards {
             display: grid; gap: 12px; margin-bottom: 28px;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         }
         .card {
-            background: var(--panel); border: 1px solid var(--line);
+            background: var(--surface); border: 1px solid var(--line);
             border-radius: 8px; padding: 14px 16px;
         }
-        .card .n { font-size: 26px; font-weight: 600; line-height: 1.1; }
+        /* Counts are data, so they are monospaced: a row of counters then aligns
+           on the digit rather than drifting with each number's width. */
+        .card .n { font-family: var(--mono); font-size: 26px; font-weight: 600;
+                   line-height: 1.1; letter-spacing: -.02em; }
         .card .l { color: var(--muted); font-size: 12px; margin-top: 4px; }
         .card.bad .n { color: var(--bad); }
         .card.warn .n { color: var(--warn); }
@@ -51,7 +99,10 @@
             border-bottom: 1px solid var(--line); vertical-align: top;
         }
         th { color: var(--muted); font-size: 12px; font-weight: 500; }
-        td.mono, th.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+        td.mono, th.mono { font-family: var(--mono); font-size: 12.5px; }
+        /* Numeric columns align on the digit, which is the whole reason to set
+           them in mono in the first place. */
+        td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
         tbody tr:hover { background: #161d26; }
         tr.dim td { opacity: .7; }
         .tag {
@@ -69,7 +120,7 @@
             padding: 12px 14px; margin-bottom: 20px; color: var(--muted); font-size: 13px;
         }
         a { color: var(--accent); }
-        code { font-family: ui-monospace, monospace; font-size: 12px; }
+        code { font-family: var(--mono); font-size: 12.5px; }
         pre {
             background: var(--panel); border: 1px solid var(--line);
             border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 12px;

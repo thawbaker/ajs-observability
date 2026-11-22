@@ -1,5 +1,6 @@
 package com.example.ajs.auth.web;
 
+import com.example.ajs.auth.domain.App;
 import com.example.ajs.auth.domain.User;
 import com.example.ajs.auth.repository.AppRepository;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,10 +25,16 @@ import java.util.Optional;
  * not enforced is worse than not offering it, because it reads as a control that
  * exists.
  *
- * <p>Maps request paths to app slugs, then checks whether the authenticated
- * user holds a deny row for that app. Administrators bypass the check: they must
- * be able to reach every page in order to administer it, and locking an admin
- * out of a dashboard they need to fix would be a support problem with no
+ * <p>Maps request paths to app slugs, then applies <strong>two</strong> checks to
+ * the authenticated user: the app must be <em>enabled</em>, and the user must not
+ * hold a deny row for it. The enabled check was added later — without it, a
+ * disabled app was dropped from {@code AppRepository.accessibleApps()} and from
+ * the navigation but its route still answered 200, making {@code /admin/apps} a
+ * control in appearance only.
+ *
+ * <p>Administrators bypass both checks: they must be able to reach every page in
+ * order to administer it, and locking an admin out of a dashboard — or out of a
+ * disabled app they need to re-enable — would be a support problem with no
  * in-product remedy.
  *
  * <p>Routes not present in the map are unaffected. That is deliberate — the
@@ -39,12 +46,21 @@ public class AppPermissionInterceptor implements HandlerInterceptor {
     private static final Logger log = LoggerFactory.getLogger(AppPermissionInterceptor.class);
 
     /**
-     * Route prefix to app slug. Must stay in step with
-     * {@code AuthBootstrap.BUILT_IN_APPS}, which registers these slugs.
+     * Route prefix to app slug. Must stay in step with <strong>two</strong> other
+     * places, or the control silently does not exist:
+     *
+     * <ul>
+     *   <li>{@code AuthBootstrap.BUILT_IN_APPS} — registers the slug, so there is
+     *       an app row to deny against.</li>
+     *   <li>{@code WebMvcConfig.addPathPatterns} — registers the path, so this
+     *       interceptor is invoked at all. A route in this map but absent there
+     *       is never checked, which is how the timeline was ungovernable (C8).</li>
+     * </ul>
      */
     private static final Map<String, String> ROUTE_TO_SLUG = Map.of(
             "/overview", "overview",
             "/calendar", "calendar",
+            "/timeline", "timeline",
             "/failures", "failures",
             "/jobs", "jobs",
             "/attention", "attention"
@@ -80,8 +96,8 @@ public class AppPermissionInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        Optional<Long> appId = apps.findAppBySlug(slug).map(app -> app.id());
-        if (appId.isEmpty()) {
+        Optional<App> registered = apps.findAppBySlug(slug);
+        if (registered.isEmpty()) {
             // The app is not registered, so there is nothing to deny against.
             // Fail open: an unregistered route is a configuration question, not
             // a reason to block a signed-in user.
@@ -89,7 +105,28 @@ public class AppPermissionInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        if (apps.blockedAppIds(user.id()).contains(appId.get())) {
+        App app = registered.get();
+
+        // A disabled app must be unreachable, not merely hidden from the menu.
+        //
+        // Without this check, disabling an app in /admin/apps only removed it
+        // from navigations: the URL still answered 200 for any signed-in user.
+        // That made the control cosmetic, which is the same failure the denylist
+        // check below exists to prevent — a restriction that reads as enforced
+        // but is not. AppRepository.accessibleApps() had always excluded disabled
+        // apps from the list; the interceptor simply never asked.
+        //
+        // Administrators are exempt for the same reason they bypass the denylist:
+        // re-enabling a disabled app is an admin action, and locking admins out
+        // of the page they need to fix it would have no in-product remedy.
+        if (!app.enabled()) {
+            log.debug("Denied user {} access to disabled app '{}'", user.email(), slug);
+            response.sendError(HttpServletResponse.SC_FORBIDDEN,
+                    "You do not have access to this application");
+            return false;
+        }
+
+        if (apps.blockedAppIds(user.id()).contains(app.id())) {
             log.debug("Denied user {} access to app '{}' (denylist)", user.email(), slug);
             response.sendError(HttpServletResponse.SC_FORBIDDEN,
                     "You do not have access to this application");
