@@ -189,6 +189,129 @@ unknown job is silently undisplayable. **Whether the real `QAIJSHST` holds one
 row per run or one row per *step* within a run is not confirmed** — the fixture
 assumes per-run.
 
+---
+
+## Is it feasible to define, trigger, and schedule jobs?
+
+Asked directly, so answered directly. **Yes, technically feasible — but it is a
+different product with a different risk profile, and it is not a feature to bolt
+onto this app.** This is open question 1 in `req.txt` §9, so it needs a decision
+rather than an implementation.
+
+### The three capabilities are not equally hard
+
+| Capability | Mechanism | Difficulty | Main obstacle |
+| --- | --- | --- | --- |
+| **Trigger** (run a job now) | `SBMJOB` / AJS submit, or `RLSJOBJS` | Low | Authority only |
+| **Hold / release** | `HLDJOBJS` / `RLSJOBJS` via `CommandCall` | Low | Authority only |
+| **Define** (create/change a job) | `ADDJOBJS` / `CHGJOBJS` | **High** | ~50 parameters, no transactional safety |
+| **Schedule** (change when it runs) | `CHGJOBJS` SCDCDE | **High** | Same as define |
+
+Trigger and hold/release are a real, small win. Define and schedule are where the
+cost and the risk actually live.
+
+### The blocking constraint is authority, not code
+
+This is the part that matters most, and it is not obvious.
+
+**AJS enforces its own authority model on top of IBM i object authority.** Having
+`*USE` on the command is *not sufficient*. IBM documents this as message
+`IJS1098`: a user with `*USE` to `ADDJOBJS` still gets
+`Not authorized to function *ADDJOB`. The fix is to grant authority through AJS's
+*own* configuration:
+
+```
+GO JS  ->  Option 5 (System Controls)  ->  Option 4 (Work with Function Authorities)
+       ->  Option 2 (Edit Function Authority)  ->  grant *USE to the *ADDJOB function
+```
+
+Consequences for this project:
+
+- **The read-only service profile cannot do any of this, by design.** Its whole
+  value is that it has no `*JOBCTL` and no AJS function authority. Writing means a
+  **second, privileged profile** with its own credential, rotation, and audit
+  story.
+- That directly contradicts the security posture the app already encodes:
+  "Dedicated read-only IBM i user profile (no `*ALLOBJ`, no `*JOBCTL`)"
+  (`req.txt` §6) and the augmented authority model in the auth layer.
+- `ADDJOBJS`, `CHGJOBJS`, `HLDJOBJS`, and `RLSJOBJS` are all
+  **`Threadsafe: No`**. `CommandCall` calls are therefore serialised. A naive
+  "loop over jobs and hold them" will interleave badly under concurrency; needs
+  an explicit single-threaded command queue.
+- `*JOBCTL` may also be required for commands that act on other users' jobs.
+  Confirm per command on the actual release — treat as unknown.
+
+### Define is not just more fields — it is a different problem
+
+`ADDJOBJS` takes on the order of fifty parameters (schedule code `SCDCDE` with
+its `*DAILY`/`*CALENDAR`/`*MINUTE`/`*MONTHEND` variants, calendars, holiday and
+fiscal calendars, job queue, job description, run-as profile, message queue,
+recovery action, command sequences...). Two specific hazards:
+
+1. **No transactional safety.** There is no "preview" mode and no rollback. A
+   half-valid definition is accepted field-by-field; a wrong calendar silently
+   schedules a job on the wrong days, and nobody notices until it does not run.
+   That is strictly worse than a validation error, because it is a silent wrong
+   answer rather than a loud one.
+2. **Command-sequence injection.** A job's command text is operator-supplied CL.
+   A web form that accepts a command sequence is a remote-code-execution surface
+   on the production partition. This needs allowlisting and review, not escaping.
+
+### The CLI approach does not avoid the problem
+
+Two tempting shortcuts, both dead ends:
+
+- **Writing rows directly to `QAIJSMST`.** AJS is a licensed product with its own
+  internal consistency (sequence numbers, calendars, dependencies). Writing its
+  tables behind its back is unsupported and corrupts state in ways `DSPFFD` will
+  not warn you about. Do not.
+- **Driving `WRKJOBJS` by screen-scraping.** The command is
+  `Where allowed to run: Interactive environments (*INTERACT *IPGM *IREXX *EXEC)`
+  and `Threadsafe: No`. It is a panel, not an API, and `CommandCall` explicitly
+  does not support interactive commands. There is no supported non-interactive
+  path through the panels.
+
+### Recommendation
+
+**Keep the observability app read-only.** Reasons, in order of weight:
+
+1. It is a v1 monitoring tool whose entire trust story is "this cannot break
+   production". Adding write authority destroys that, and the value of the write
+   features is far smaller than the value of the guarantee.
+2. The write path needs a second privileged profile and a new audit surface,
+   which is Phase 3 hardening work at minimum, not a feature branch.
+3. **Trigger and hold/release are the only write operations with a good
+   risk-to-value ratio** — bounded, reversible, and easy to audit. If any write
+   capability is wanted, do that one, behind explicit confirmation and an
+   append-only audit log recording who, what, when, on which partition.
+4. **Define and schedule should not be built into a web app.** If genuinely
+   needed, the safer shape is reviewed, version-controlled CL scripts or a
+   request/approval workflow — a human approves the change and it is
+   source-controlled — not a form that calls `ADDJOBJS` directly.
+
+If this changes, it changes as a deliberate Phase 4/5 project with its own
+security review. It should not be added opportunistically to `/jobs`.
+
+### What this means for the current code
+
+Nothing to change — the read-only guarantee is intact and worth keeping explicit:
+`AjsRepository`'s contract says every method is read-only, `JdbcAjsRepository`'s
+javadoc says every statement is a `SELECT`, and a test asserts no write reaches
+the fixture. Those are the right invariants. If write support is ever added, it
+should arrive as a **separate interface** with its own datasource and profile, so
+the read-only path cannot be widened by accident.
+
+### Sources
+
+- AJS function authority / `IJS1098`:
+  https://www.ibm.com/support/pages/message-ijs1098-advanced-job-scheduler
+- `WRKJOBJS` environments and threadsafety:
+  https://www.ibm.com/docs/en/i/7.4.0?topic=w-work-jobs-using-advanced-job-scheduler
+- jt400 `CommandCall` (non-interactive commands only):
+  https://javadoc.io/static/net.sf.jt400/jt400-jdk8/11.1/com/ibm/as400/access/CommandCall.html
+- HLDJOBJS/RLSJOBJS as the hold/release pair:
+  https://www.ibm.com/support/pages/scheduling-advanced-job-scheduler-job-reset-another-advanced-job-scheduler-job
+
 ### Two infrastructure traps worth remembering
 
 - **`application-test.yml` in `src/test/resources` is invisible to `bootRun`.**
@@ -256,6 +379,10 @@ Phase 1 exits, on one real partition:
 2. Confirm real `JMDTE`/`JMLRD` encodings and the `9999999` / `0` sentinels.
 3. Confirm `QSYS2.ACTIVE_JOB_INFO` exists at the installed PTF level (R4).
 4. Confirm the jt400 DRDA path end to end (`jdbc:as400:`) actually connects (R5).
+5. **If write actions are ever in scope:** confirm on the real host which AJS
+   function authorities are needed, and whether `*JOBCTL` is required, for
+   `HLDJOBJS`/`RLSJOBJS`/`SBMJOB`. Note that `*USE` on the command alone is
+   provably not enough (message `IJS1098`) — see the feasibility section above.
 
 Run the app with `ajs.schema-validation.enabled=true` against that partition: it
 logs exactly which expected columns are missing.
