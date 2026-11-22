@@ -65,7 +65,7 @@ public class SecurityConfig {
                 // form POST from a browser session". That was wrong: there are ten
                 // browser form POSTs, including destructive admin actions
                 // (POST /admin/users/{id}/delete, /disabled, /role, and the app and
-                // permission forms). See DESIGN-CRITIQUE.md C1.
+                // permission forms). See NOTES.md, design review finding C1.
                 //
                 // The only thing preventing cross-site forgery of those requests is
                 // the session cookie being set SameSite=Lax in AuthController. That

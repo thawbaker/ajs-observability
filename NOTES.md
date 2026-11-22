@@ -3,6 +3,73 @@
 Working recommendations distilled from `req.txt`, plus verified facts about this
 machine. Read this before changing direction.
 
+## What this application is
+
+A read-only web dashboard for **IBM Advanced Job Scheduler (AJS)** on IBM i. It
+answers the questions a 5250 session makes tedious: what is due today, what
+failed, what is held or never ran, and — via the timeline — when jobs actually
+ran and how long each took.
+
+> **This application never writes to the IBM i.** Every query is a `SELECT`, and
+the service profile it is designed to use has no `*JOBCTL` and no AJS function
+authority. Hold, release, submit and job-definition changes are deliberately out
+of scope — see *Can it define and schedule jobs?* below.
+
+| View | Path | Answers |
+| --- | --- | --- |
+| **Overview** | `/overview` | Counts: ready, held, due today, genuine failures, never run |
+| **Due** | `/calendar` | Jobs scheduled on a given date |
+| **Timeline** | `/timeline` | Every run in a date/time window, as a bar chart |
+| **Failures** | `/failures` | Abnormal completions, with `*NOSBM` skips shown separately |
+| **Inventory** | `/jobs` | All job definitions, grouped by application group |
+| **Job detail** | `/jobs/{name}` | One job's definition plus its command list |
+| **Needs attention** | `/attention` | Held and never-run jobs |
+| **Administration** | `/admin/**` | Users, apps, per-app view permissions (ADMIN only) |
+
+### Orientation — read in this order
+
+1. **This file** — the engineering log. Start here.
+2. **`req.txt`** — the original requirements, including open questions. Several
+   are still unresolved (`§9`).
+3. **`docs/README.pdf`** — illustrated walkthrough.
+4. **`docs/tools/`** — tooling that generates that PDF from the running app.
+
+---
+
+## Architecture
+
+Two **entirely separate** datasources. Conflating them is the easiest mistake to
+make here.
+
+```
+        AJS data (READ-ONLY)                 Accounts (read-write)
+   ┌──────────────────────────────┐    ┌──────────────────────────────┐
+   │ jdbc:as400://  →  QUSRIJS    │    │ SQLite file                  │
+   │ H2 MODE=DB2 in tests         │    │ H2 is NOT used here          │
+   │ AjsRepository (interface)    │    │ UserRepository/AppRepository │
+   └──────────────────────────────┘    └──────────────────────────────┘
+```
+
+Data comes from the AJS physical files — `QAIJSMST` (definitions), `QAIJSHST`
+(run history), `QAIJS1CM` (command lists) — over the jt400 JDBC driver. Nothing
+is installed on the IBM i; these are the same tables the 5250 panels read.
+
+**Why `AjsRepository` is an interface:** the jt400 driver accepts only
+`jdbc:as400:` URLs and will not talk to H2. To test with no IBM i present, the
+SQL boundary has to have a second implementation. That abstraction **is** the
+offline test strategy — it is not incidental. Do not simplify it away.
+
+| Layer | Location |
+| --- | --- |
+| Domain + legacy date decoding | `src/main/java/com/example/ajs/domain/` |
+| SQL (read-only) | `.../repository/` |
+| View logic (tested, not in templates) | `.../service/` |
+| Controllers | `.../web/` |
+| Accounts, JWT, permissions | `.../auth/` |
+| Thymeleaf templates | `src/main/resources/templates/` |
+
+---
+
 ## Core architectural recommendation (from req.txt §3, Option A + C)
 
 - **Primary data source: direct read-only SQL over QUSRIJS physical files**
@@ -89,11 +156,22 @@ against H2 can never reveal. One `DSPFFD` against a real partition retires this.
 
 # Run the real application against fabricated data (H2), for UI work / demos.
 ./gradlew bootRun --args='--spring.profiles.active=local'
+#   bootstrap admin: admin@localhost / localdev1234  (local profile only)
 # then browse http://localhost:8080
 
 # Production build. H2 is NOT included (verified); jt400 IS (verified).
 ./gradlew build
+
+# Production runs need a real secret, or JwtService refuses to start:
+export JWT_SECRET=$(openssl rand -base64 48)
 ```
+
+On a fresh database `AuthBootstrap` registers the five dashboards as apps and
+creates one administrator. If `AUTH_BOOTSTRAP_ADMIN_PASSWORD` is unset it
+generates a random password and logs it **once** at WARN — deliberately, because
+a fixed default password is how these accounts reach production unchanged.
+
+Requires **Java 21**; Gradle provisions the toolchain automatically.
 
 ### Toolchain note
 
@@ -178,6 +256,23 @@ could: *when did jobs actually run, and how long did each take?*
 - Percentage arithmetic is in `TimelineViewHelper`, not in template expressions.
   The first attempt put nested `BigDecimal` expressions in a `th:style`; it was
   unreadable and untestable, and it is what produced bug 6 above.
+
+### Timeline behaviour worth preserving
+
+- **A job that was expected to run but produced nothing still appears**, as a
+  dashed `not run` marker. Lanes are built from the job master file, not from
+  history rows, so an absence is visible rather than silent.
+- **A run with no elapsed time is treated as still running**, not as zero
+  duration, which would draw an in-flight job as an instantaneous success.
+- **Bars have a 0.35% minimum width.** Deliberate visual lie: without it a short
+  run in a wide window rounds to zero pixels and a job that *did* run looks like
+  one that did not. Tooltips and the table carry the true duration.
+- Bar geometry is computed server-side, so the chart renders with JavaScript
+  disabled; only the axis ticks need it.
+- The window is **half-open `[from, to)`**, so paging through days does not
+  double-count a run starting on a boundary.
+- **No screenshot of the timeline exists yet** — the images in
+  `docs/screenshots/` predate the view. Regenerate with `docs/tools/`.
 
 ### Fixture history
 
@@ -326,18 +421,10 @@ the read-only path cannot be widened by accident.
 
 ---
 
-## Test results (verified)
+## Smoke test (verified, not assumed)
 
-**61 tests, 0 failures** on a forced `--rerun-tasks` run.
-
-| Suite | Tests | Covers |
-|-------|-------|--------|
-| `AjsDateDecodersTest` | 30 | Tier 1 — CYYMMDD, YYMMDD, HHMMSS, sentinels, display |
-| `JdbcAjsRepositoryTest` | 12 | Tier 2 — SQL + row mapping against H2 `MODE=DB2` |
-| `AjsObservabilityServiceTest` | 7 | View logic, `*NOSBM` rule, grouping |
-| `DashboardControllerTest` | 12 | Tier 3 — real Thymeleaf rendering over MockMvc |
-
-### Smoke test (verified, not assumed)
+The consolidated test table is under *Consolidated test results* below. This
+section keeps the end-to-end check that the whole stack answers over real HTTP.
 
 `./gradlew bootRun --args='--spring.profiles.active=local'` then, over real HTTP:
 
@@ -419,22 +506,6 @@ full access. New apps are granted automatically because nobody has a deny row
 for them yet. Inverting this turns "restrict one app" into "revoke everything".
 Pinned by 9 tests in `PermissionDenylistTest`.
 
-## How to run
-
-```bash
-# Local, no IBM i, fabricated AJS data.
-./gradlew bootRun --args='--spring.profiles.active=local'
-#   bootstrap admin: admin@localhost / localdev1234  (local profile only)
-
-# Production runs need a real secret, or JwtService refuses to start:
-export JWT_SECRET=$(openssl rand -base64 48)
-```
-
-On a fresh database `AuthBootstrap` registers the five dashboards as apps and
-creates one administrator. If `AUTH_BOOTSTRAP_ADMIN_PASSWORD` is unset it
-generates a random password and logs it **once** at WARN — deliberately, because
-a fixed default password is how these accounts reach production unchanged.
-
 ## Security properties, each verified against the running app
 
 | Property | Verified result |
@@ -507,22 +578,34 @@ everyone out. Enforced behaviour is pinned by
 - **`usersDenied()` on the Apps page is O(users × apps) queries.** Acceptable at
   this scale; it would need a join before the user count grows materially.
 
-## Test results (verified)
+## Consolidated test results (verified)
 
-**118 tests, 0 failures** on a forced `--rerun-tasks` run.
+**137 tests, 0 failures**, re-run with `--rerun-tasks` so nothing was cached.
 
-| Suite | Tests | Covers |
-|-------|-------|--------|
-| `AjsDateDecodersTest` | 30 | CYYMMDD, YYMMDD, HHMMSS, sentinels |
-| `JwtServiceTest` | 18 | sign/verify, expiry, tampering, secret validation |
-| `AuthFlowTest` | 19 | real sign-in/up/out, role gating, disabled, tamper |
-| `DashboardControllerTest` | 13 | Thymeleaf rendering + auth required |
-| `JdbcAjsRepositoryTest` | 12 | SQL + mapping vs H2 `MODE=DB2` |
-| `PermissionDenylistTest` | 9 | denylist semantics, cascade, per-user scoping |
-| `AjsObservabilityServiceTest` | 7 | view logic, `*NOSBM` rule |
-| `AppPermissionEnforcementTest` | 6 | denylist actually enforced on routes |
-| `SecurityWiringTest` | 3 | chain installed, bcrypt is real bcrypt |
-| `MockMvcSecurityDiagnosticTest` | 1 | isolates harness vs application security |
+Four tiers, all offline:
+
+1. **Unit** — legacy date decoding, view logic, timeline geometry.
+2. **Repository** — real SQL against H2 in `MODE=DB2`, standing in for `QUSRIJS`.
+3. **HTTP / template** — MockMvc rendering the real Thymeleaf templates.
+4. **Security** — authentication, role gating, permission enforcement.
+
+| Suite | Tests | Tier | Covers |
+|-------|-------|------|--------|
+| `AjsDateDecodersTest` | 30 | 1 | CYYMMDD, YYMMDD, HHMMSS, sentinels, display |
+| `AuthFlowTest` | 19 | 4 | Real sign-in/up/out, role gating, disabled, tamper |
+| `JwtServiceTest` | 18 | 4 | Sign/verify, expiry, tampering, secret validation |
+| `JdbcAjsRepositoryTest` | 16 | 2 | SQL + mapping vs H2 `MODE=DB2`, run window |
+| `DashboardControllerTest` | 16 | 3 | Thymeleaf rendering, auth required, timeline page |
+| `AjsObservabilityServiceTest` | 11 | 1 | View logic, `*NOSBM` rule, gaps, lane building |
+| `PermissionDenylistTest` | 9 | 4 | Denylist semantics, cascade, per-user scoping |
+| `TimelineViewHelperTest` | 8 | 1 | Bar geometry, gaps, minimum width, edges |
+| `AppPermissionEnforcementTest` | 6 | 4 | Denylist actually enforced on routes |
+| `SecurityWiringTest` | 3 | 4 | Chain installed, bcrypt is real bcrypt |
+| `MockMvcSecurityDiagnosticTest` | 1 | 4 | Isolates harness vs application security |
+
+> The counts above are per top-level test class. JUnit nested classes
+> (`AjsDateDecodersTest$Cyymmdd` and friends) are folded into their parent, which
+> is why an earlier version of this table disagreed with the total.
 
 ### Verified production jar composition
 
@@ -538,41 +621,349 @@ real IBM i). SQLite: **4** entries present.
 - TLS: `setSecure(false)` on the session cookie, because local HTTP. **Must be
   flipped to `true` behind HTTPS** before any real deployment, or the token is
   sent in clear text.
+- Multi-partition support is not designed for (`req.txt` §9 q3), and SSO/Kerberos
+  is not wired (`req.txt` §9 q8).
 
 ---
 
-## Design review (added after the timeline work)
+## Design review and handoff (added after the timeline work)
 
-A deliberate critique of this design, plus a handoff guide, is in
-[`docs/DESIGN-CRITIQUE.md`](docs/DESIGN-CRITIQUE.md). Read it before making
-structural changes or taking over the project.
+A deliberate critique of this design, plus a handoff guide. Ordered by how much
+each issue matters, not by how easy it is to fix.
 
-Summary of the findings, worst first. Each was verified against the code:
+### Verdict
 
-| # | Issue | Severity |
-| --- | --- | --- |
-| C1 | CSRF disabled; the justifying comment was factually wrong | **High** |
-| C2 | `findRunsBetween` selects the whole `QAIJSHST` with no `WHERE` | **High** |
-| C3 | Admin mutations are not audited at all | Medium |
-| C4 | Permission denylist defaults should be asserted to fail closed | Medium |
-| C5 | Several service methods each re-read the master file | Low |
-| C6 | No caching or poller; load is proportional to page views | Low |
-| C7 | `LocalDate.now()` in service code limits testability | Low |
+The core architecture is right and I would not change it. Read-only SQL over
+`QUSRIJS`, a repository interface with two implementations, server-rendered
+Thymeleaf, domain semantics in tested Java rather than in template expressions —
+those decisions are holding up well, and the offline test tier is the reason
+three real bugs were caught.
 
-**C1 was fixed as far as it safely can be without a design decision:** the false
-comment in `SecurityConfig` has been replaced with an accurate one naming the
-real weakness, so a reviewer can see it. The fix itself — re-enabling CSRF — is
-small (Thymeleaf's `th:action` injects the token automatically) but is a
-behaviour change that belongs to whoever owns the security posture.
+The problems are concentrated in two places: **the security layer's reasoning**
+(one comment is factually wrong and the reasoning behind it is the only thing
+protecting state-changing endpoints), and **query strategy** (two methods fetch
+whole tables and filter in Java, which does not scale to the stated target).
 
-**C2 is the one that gets worse as the system succeeds.** `findRunsBetween`
-transfers the entire run history over DRDA on every timeline page view. The
-reason is sound — `HSDTE` is packed CYYMMDD and cannot be compared to a
-timestamp without provoking SQL0181/CPD4019 — but the conclusion does not follow:
-`HSDTE` is numerically ordered within a century, so a `BETWEEN` on decoded
-CYYMMDD integers is a valid, index-usable restriction that keeps date arithmetic
-in Java. See the critique for the detail.
+Nothing here is an emergency. Two items should be fixed before this is exposed
+to more than a handful of trusted users: **C1** and **C2**.
 
-The critique also lists what is good and should *not* be "cleaned up", which is
-worth reading alongside the problems — several deliberate decisions here look
-redundant until you know why they exist.
+| # | Issue | Severity | Effort |
+| --- | --- | --- | --- |
+| C1 | CSRF disabled; justification in the comment is false | **High** | S |
+| C2 | `findRunsBetween` selects the entire history table | **High** | M |
+| C3 | Admin actions are not audited at all | **Medium** | S |
+| C4 | Permission denylist defaults could fail open | Medium | S |
+| C5 | `overview()` recomputes by re-reading everything | Low | S |
+| C6 | No caching; poll interval is per-request, not scheduled | Low | M |
+| C7 | `LocalDate.now()` makes some behaviour untestable | Low | S |
+
+---
+
+### C1 — CSRF is disabled, and the stated reason is untrue
+
+**High. Fix before wider exposure. Small effort.**
+
+`SecurityConfig.filterChain` disables CSRF with this justification:
+
+> CSRF is disabled because the session is a cookie-authenticated stateless API
+> and there is no HTML form POST from a browser session in the classic sense.
+
+That is **factually wrong**, and it is worth being blunt about because a wrong
+comment is worse than no comment: it stops the next person checking. There are
+**ten** browser form POSTs, including destructive admin actions:
+
+```
+src/main/resources/templates/auth/admin-users.html:61   POST /admin/users/{id}/delete
+src/main/resources/templates/auth/admin-users.html:57   POST /admin/users/{id}/disabled
+src/main/resources/templates/auth/admin-users.html:38   POST /admin/users/{id}/role
+src/main/resources/templates/auth/admin-permissions.html:23
+src/main/resources/templates/auth/admin-apps.html:46,56
+src/main/resources/templates/auth/sign-in.html:17
+src/main/resources/templates/auth/sign-up.html:12
+src/main/resources/templates/layout.html:158            POST /auth/sign-out
+```
+
+Ten `@PostMapping` handlers exist (`AdminController`, `AuthController`).
+
+**Why this is not already a live vulnerability:** the session cookie is set with
+`SameSite=Lax` (`AuthController:131`), which prevents it being sent on a
+cross-site `POST`. So the practical risk today is low — but that means
+**`SameSite=Lax` is the single defense protecting every state-changing endpoint**,
+and that fact is nowhere recorded. Two consequences:
+
+- Any browser that does not honour `SameSite` — or any future relaxation to
+  `SameSite=None` — silently makes admin user deletion CSRF-able.
+- The comment tells a reviewer the risk is already handled, so the real
+  dependency is invisible.
+
+**Recommendation:** re-enable CSRF protection. The templates are server-rendered
+Thymeleaf, so this is genuinely easy: Thymeleaf's `th:action` automatically
+injects a hidden `_csrf` field, and Spring Security's default token repository
+works unchanged. Login and logout POSTs also need the token — which is exactly
+what the Thymeleaf integration handles for free. Then delete the misleading
+comment rather than rewording it.
+
+If CSRF stays disabled for now, **the comment must be corrected** to state that
+`SameSite=Lax` is the only mitigation and is load-bearing. That is a five-minute
+change and it is the difference between a reviewer seeing the risk and not.
+
+---
+
+### C2 — the timeline reads the entire history file on every request
+
+**High for scale. Medium effort.**
+
+`JdbcAjsRepository.findRunsBetween` builds:
+
+```java
+String sql = "SELECT " + JobRunRowMapper.SELECT_COLUMNS + " FROM " + HISTORY + " h";
+```
+
+No `WHERE` clause. It selects **every row in `QAIJSHST`** — which on a real
+partition is the complete run history, plausibly hundreds of thousands of rows
+growing forever — transfers all of it over DRDA, maps each row in Java, and only
+then filters to the window.
+
+The window filter *cannot* trivially be pushed into SQL, and the existing code is
+right about why: `HSDTE` is packed CYYMMDD, so comparing it to a timestamp raises
+SQL0181/CPD4019 (risk R2). But "cannot compare timestamps directly" does not mean
+"must read the whole table". Options, in order of preference:
+
+1. **Bound on the packed value.** `HSDTE` is numerically ordered within a century
+   — `1251120` < `1251121`. A `WHERE h.HSDTE BETWEEN ? AND ?` on *decoded
+   CYYMMDD integers* is a valid range restriction and uses an index if one
+   exists. Only the window edges need decoding, in Java, before the query. This
+   preserves the "no date arithmetic in SQL" rule while making the query
+   selective.
+2. **`ORDER BY h.HSDTE, h.HSTME` in SQL** rather than sorting in Java, so the
+   database can use an index for ordering.
+3. At minimum, an explicit upper bound so the query cannot grow without limit.
+
+Related and worth deciding at the same time: the timeline does not paginate. On
+a wide window with many jobs, the response is unbounded. `req.txt` §6 targets
+"a few thousand AJS jobs" with "< 2s p95". Fetching the whole history file per
+page view will not meet that, and the failure will appear as a slow DRDA transfer
+rather than an error — the hardest kind to diagnose.
+
+The same pattern exists in `findScheduledOn`, which calls `findAllJobs()` and
+filters in Java. That one is *defensible* and is documented as a deliberate
+trade-off at the job scale of a few thousand — I would leave it, but the timeline
+history table is a different order of magnitude.
+
+---
+
+### C3 — admin actions leave no trace
+
+**Medium. Small effort.**
+
+`AdminController` can create users, change roles, disable accounts, delete
+accounts, and rewrite per-app permissions. None of it is logged. `NOTES.md`
+claims "audit logging" as part of Phase 3, but there is currently no audit trail
+at all — `git grep` finds no logging in `AdminController`.
+
+For an app whose entire value proposition is "you can trust this view of
+production", "who demoted the admin and when" should be answerable. This is the
+cheapest high-value fix on the list: a structured log line per admin mutation
+(actor, action, target, outcome) is maybe twenty lines. Full audit tables are a
+Phase 3 concern; a log line is not.
+
+---
+
+### C4 — permission denylist defaults
+
+**Medium. Small effort.**
+
+`NOTES.md` records a "denylist inversion" and there is a dedicated
+`PermissionDenylistTest`, so this was thought about. Flagging it anyway as the
+thing to re-verify on any change: for a *monitoring* tool, failing open means
+showing a user jobs they are not entitled to see, which may leak job names,
+library names, and command text. Failing closed means they see an empty page and
+ask. Empty page is the correct default. Worth asserting explicitly that a user
+with no permission rows sees nothing, rather than only asserting that explicit
+denials work.
+
+---
+
+### C5 — `overview()` re-reads everything to compute counters
+
+**Low. Small effort, only if it matters.**
+
+`overview()` calls `findAllJobs()` once and derives eight counters in one pass —
+that part is fine. But the counters are recomputed on every request, and several
+other service methods (`allJobs()`, `byApplicationGroup()`, `timeline()`) each
+call `findAllJobs()` again. A single page render can issue several full master-file
+reads. `countJobs()` issues a separate `SELECT COUNT(*)` on top.
+
+At the stated scale this is acceptable; noting it so the next person does not
+"optimise" one method in isolation and miss that the pattern is systemic. The
+real fix, if needed, is per-request caching of the master file (C6).
+
+---
+
+### C6 — no caching, and no actual poller
+
+**Low now, Medium later.**
+
+`req.txt` §6 asks for adaptive polling and caching (R6: excessive polling can
+consume IBM i CPU/jobs). The current design has no poller and no cache: every
+page view is a fresh set of queries. That is *simpler and safer* than a poller,
+and for interactive use it is arguably the better choice — but it means load is
+proportional to human page views, and there is no rate limit. A user holding F5
+hammers the partition.
+
+If real-time views are added (Phase 4), this becomes the central design problem:
+one scheduled poller with a cache and an adaptive interval, not per-request
+queries. Do not add polling per page.
+
+---
+
+### C7 — `LocalDate.now()` in domain code
+
+**Low. Small effort.**
+
+`AjsObservabilityService.overview()` and the controller use `LocalDate.now()`
+directly. `AjsDateDecoders.decodeYymmdd` already does the right thing by having a
+package-visible variant with an injected pivot, with a comment explaining that it
+exists to keep tests deterministic. The service layer does not follow that
+pattern, so anything date-relative in the service is testable only relative to
+"today". Worth a `Clock` injection if date-relative behaviour grows.
+
+---
+
+### What is good, and should not be "cleaned up"
+
+Listing these so a future refactor does not undo them:
+
+- **Domain semantics in Java, not in templates.** The `*NOSBM` false-alarm rule,
+  never-run/held classification, and sentinel decoding are all in tested Java.
+  This is why the timeline's outcome logic was moved into `TimelineViewHelper`
+  rather than living in a `th:classappend` — and that move is what fixed the
+  truncated-page bug.
+- **`AjsSchemaValidator` reports drift rather than refusing to start, by
+  default.** A monitoring tool that will not boot is worse than one that boots
+  and shouts. Correct call.
+- **The read-only invariant is stated in three places** — the interface contract,
+  the repository javadoc, and a test that asserts no write reaches the table. That
+  redundancy is deliberate and should stay.
+- **Comments explain *why*, including rejected alternatives.** The `CMSEQ` vs
+  `JMSEQ` comment, the YYMMDD pivot reasoning, and the genuinely-discovered
+  infrastructure traps are the most valuable documentation in the repo. The one
+  exception is C1, where the comment is confidently wrong — the lesson is that an
+  unverified "why" is more dangerous than none.
+- **The timeline renders without JavaScript.** Bar geometry is computed
+  server-side. On a monitoring page, "goes blank when a script fails" is a real
+  failure mode.
+
+---
+
+### Handoff
+
+#### Orientation — read in this order
+
+1. **This file** — the running engineering log: bugs caught, traps, the
+   write-feasibility finding, and the design critique. It is the only prose
+   document; there is deliberately no separate README or critique file.
+2. **`req.txt`** — the original requirements this was built against, including
+   the open questions. Several are still open (`§9`).
+3. **`docs/README.pdf`** — illustrated walkthrough of the running application.
+4. **`docs/tools/`** — tooling that generates that PDF from the running app.
+
+#### Mental model
+
+Two *entirely separate* datasources, and conflating them is the easiest mistake:
+
+```
+AJS data (read-only)          Auth data (read-write)
+jdbc:as400: -> QUSRIJS        SQLite file
+H2 MODE=DB2 in tests          H2 is NOT used here
+AjsRepository (interface)     UserRepository / AppRepository
+```
+
+The jt400 driver only accepts `jdbc:as400:` URLs, which is *why* `AjsRepository`
+is an interface with a second implementation — that is the whole offline test
+strategy, not incidental abstraction. Do not "simplify" it away.
+
+#### Invariants to preserve
+
+- **Nothing in this application writes to the IBM i.** Every repository statement
+  is a `SELECT`. See the write-feasibility section in `NOTES.md` before
+  considering otherwise: it needs a second privileged profile and AJS's own
+  function authority, and it is a deliberate Phase 4/5 decision, not a feature.
+- **Legacy date arithmetic lives only in `AjsDateDecoders`.** Nothing else
+  touches CYYMMDD/YYMMDD. This is risk R2's containment boundary.
+- **Domain rules belong in Java, not in Thymeleaf expressions.** Template
+  expressions are untestable and, as the timeline bug showed, can fail in ways
+  that return HTTP 200 with a partial page.
+
+#### Known landmines
+
+- **A Thymeleaf parse error returns HTTP 200 with a truncated page.** The
+  response streams before it fails. If you add template logic, assert the
+  template's *tail* renders (`</html>`), not just that some expected string is
+  present. `DashboardControllerTest` shows the pattern.
+- **Multi-line expressions in `th:*` attributes fail to parse.** Keep them on one
+  line.
+- **`application-test.yml` in `src/test/resources` is invisible to `bootRun`.**
+  That is why `application-local.yml` lives in `src/main/resources`.
+- **`testImplementation` deps are not on the `bootRun` classpath.** Hence the
+  `localRuntimeOnly` configuration that keeps H2 out of the production jar.
+
+#### Open questions not resolved by code
+
+Carried forward from `req.txt` §9, still needing a human decision:
+
+- **R1 / layouts:** run `DSPFFD QUSRIJS/QAIJSMST`, `QAIJSHST`, `QAIJS1CM` on a
+  real partition and diff against `src/main/resources/fixture/schema-ajs.sql`.
+  This is the single highest-value next step — it retires the largest assumption
+  in the project, including the `QAIJSHST` key I had to guess.
+- **R5:** confirm DRDA/JDBC connectivity is permitted by network policy.
+- **R4:** confirm `QSYS2.ACTIVE_JOB_INFO` at the installed PTF level.
+- Multi-partition support: not designed for. `req.txt` §9 q3.
+- SSO/Kerberos vs local accounts: `req.txt` §9 q8.
+
+#### First three things I would do
+
+1. **Fix C1** — re-enable CSRF, or at minimum correct the comment. Highest
+   risk-to-effort ratio in the repo.
+2. **Fix C2** — bound the history query. It is the only thing here that gets
+   worse as the system succeeds.
+3. **Run `DSPFFD`** and retire R1. Everything about the data model rests on an
+   authored schema.
+
+---
+
+## Before you change anything
+
+- **Do not add write operations** without reading *Is it feasible to define,
+  trigger, and schedule jobs?* above. If write support is ever genuinely needed,
+  it should arrive as a **separate interface with its own datasource and
+  profile**, so the read-only path cannot be widened by accident.
+- **Domain rules belong in Java, not in Thymeleaf expressions.** Template
+  expressions are untestable, and a parse error there returns **HTTP 200 with a
+  truncated page** — the response streams before it fails. If you add template
+  logic, assert the page's *tail* rendered (`</html>`), not just that an expected
+  string appears. `DashboardControllerTest` shows the pattern.
+- **Keep `th:*` expressions on one line.** Multi-line attribute expressions fail
+  to parse.
+- **Legacy date arithmetic lives only in `AjsDateDecoders`.** A naive cast raises
+  SQL0181/CPD4019 on a real partition.
+- **`setSecure(false)` on the session cookie must be flipped to `true`** behind
+  HTTPS, or the token is sent in clear text.
+
+### Invariants, stated so they are not "simplified" away
+
+- **Nothing in this application writes to the IBM i.** Every repository statement
+  is a `SELECT`. This is asserted by a test, documented on the interface, and
+  repeated in the repository javadoc — the redundancy is deliberate.
+- **`AjsRepository` stays an interface with two implementations.** That split is
+  the entire offline test strategy, because jt400 only speaks `jdbc:as400:`.
+- **`AjsSchemaValidator` reports drift rather than refusing to start**, by
+  default. A monitoring tool that will not boot is worse than one that boots and
+  says loudly which column moved.
+
+---
+
+## Licence
+
+No licence file is included, which means all rights are reserved by default. Add
+one before accepting external contributions.
