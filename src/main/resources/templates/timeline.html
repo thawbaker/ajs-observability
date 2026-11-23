@@ -118,7 +118,9 @@
                                  th:classappend="${@timelineView.barClass(run)}"
                                  th:style="'left: ' + ${@timelineView.round2(@timelineView.leftPercent(from, to, run.startedAt()))} + '%; width: ' + ${@timelineView.round2(@timelineView.widthPercent(from, to, run))} + '%; --bar: ' + ${@timelineView.laneColor(lane.job().applicationGroup())} + '; animation-delay: ' + ${it.index < 60 ? (it.index * 18) : 0} + 'ms'"
                                  th:attr="title=${run.jobName() + ' — ' + #temporals.format(run.startedAt(), 'd MMM HH:mm:ss') + ' — ' + run.durationDisplay()}">
-                                <span class="tl-lbl" th:text="${run.durationDisplay()}">0s</span>
+                                <span class="tl-lbl"
+                                      th:classappend="${@timelineView.labelFlipped(from, to, run)} ? 'tl-lbl-left' : ''"
+                                      th:text="${run.durationDisplay()}">0s</span>
                             </div>
                         </th:block>
 
@@ -185,6 +187,19 @@
   Axis ticks. This is the only script on the page and it is an enhancement: with
   it disabled the bars still render in the correct positions, only the tick
   labels are absent.
+
+  THE COLLISION RULE. Tick spacing is decided by measurement, not by a hardcoded
+  count. The previous version capped ticks at 100 and picked a bucket from the
+  window length alone, which ignored how much room the labels actually had: a
+  4-day window chose the 60-minute bucket, drew 96 labels into ~850px, and the
+  result was an unreadable smear. Labels must never overlap, and "never" has to
+  hold at every window size and viewport width, so the interval is chosen from
+  the measured plot width divided by the measured label width.
+
+  Ticks and labels are therefore decoupled: the *grid* stays at the finest
+  sensible bucket so bars can still be read against a dense grid, while the
+  *labels* are thinned to whatever fits. The grid is decoration; the labels are
+  the only thing that has to be legible.
 -->
 <script>
 (function () {
@@ -195,50 +210,128 @@
   if (isNaN(from) || isNaN(to) || to <= from) return;
 
   const spanMin = (to - from) / 60000;
-
-  // Bucket sizes in minutes. "auto" picks the smallest bucket that keeps the
-  // tick count readable, so the scale adapts to the window without the user
-  // having to know what a sensible interval is.
-  const BUCKETS = [
-    { min: 15,    max: 100 },
-    { min: 60,    max: 100 },
-    { min: 360,   max: 100 },
-    { min: 1440,  max: 60  },
-    { min: 10080, max: 60  }
-  ];
-  let bucket = null;
-  if (chart.dataset.scale === 'auto') {
-    for (const b of BUCKETS) {
-      if (spanMin / b.min <= b.max) { bucket = b.min; break; }
-    }
-    bucket = bucket || 10080;
-  } else {
-    bucket = { '15min': 15, 'hour': 60, '6hour': 360, 'day': 1440 }[chart.dataset.scale] || 60;
-  }
-
   const axis = chart.querySelector('.tl-axis');
-  const ticks = Math.min(Math.ceil(spanMin / bucket), 200);
-  let html = '';
-  for (let i = 0; i <= ticks; i++) {
-    const t = new Date(from.getTime() + i * bucket * 60000);
-    if (t > to) break;
-    const pct = ((t - from) / (to - from)) * 100;
-    const label = bucket >= 1440
-      ? t.toLocaleDateString([], { day: 'numeric', month: 'short' })
-      : t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    // A tick exactly at the left edge would have its label clipped.
-    const edge = pct < 1;
-    html += '<div class="tl-tick" style="left:' + pct + '%">' +
-            '<span style="' + (edge ? 'left:2px' : '') + '">' + label + '</span></div>';
+  if (!axis) return;
+
+  // "Nice" intervals in minutes: the multiples of 5/15/30 that a human reads
+  // without arithmetic. Every candidate is a divisor-ish step of a day, so ticks
+  // land on wall-clock boundaries (whole hours, then whole days) rather than at
+  // arbitrary offsets from the window start.
+  const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440,
+                 2880, 4320, 10080, 20160, 43200];
+
+  // Explicit scales from the select are honoured as-is; Auto measures.
+  const fixedStep = {
+    '15min': 15, 'hour': 60, '6hour': 360, 'day': 1440
+  }[chart.dataset.scale];
+
+  const labelFor = (t, stepMin) => stepMin >= 1440
+    ? t.toLocaleDateString([], { day: 'numeric', month: 'short' })
+    : t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  /*
+    Width available to the axis. The plot scrolls horizontally, so its client
+    width is what the viewer can actually see; if the content is wider, the axis
+    still spans the content so ticks line up with the bars under scroll.
+  */
+  const plotEl = chart.querySelector('.tl-plot');
+  const availW = Math.max(axis.clientWidth, plotEl ? plotEl.clientWidth : axis.clientWidth) || 0;
+
+  /*
+    Measure a representative label once, in the axis's own font, rather than
+    guessing a character width. "12:34 PM" and "19 Nov" differ in width, and the
+    font is inherited from the theme, so measuring is the only honest way.
+  */
+  const probe = document.createElement('span');
+  probe.className = 'tl-tick-probe';
+  probe.textContent = labelFor(from, fixedStep || 60);
+  axis.appendChild(probe);
+  const labelW = Math.ceil(probe.getBoundingClientRect().width) || 44;
+  probe.remove();
+
+  // A label sits just right of its tick, so it needs its own width plus a gap
+  // before the next tick may draw one. LABEL_GAP is the breathing room that
+  // stops adjacent labels from touching even when they technically fit.
+  const LABEL_GAP = 14;
+  const perLabel = labelW + LABEL_GAP;
+
+  /*
+    Pick the smallest step whose labels will not collide. When even the largest
+    step is too dense (a very long window in a narrow viewport), fall back to the
+    largest step and let the label count be what it is — but that case is
+    43,200 minutes (30 days) per label, which no window in this app reaches.
+  */
+  let step = fixedStep || STEPS[STEPS.length - 1];
+  if (!fixedStep) {
+    step = STEPS[STEPS.length - 1];
+    for (const s of STEPS) {
+      const slots = Math.floor(spanMin / s) + 1;
+      // Every slot gets a label; require it to fit in the available width.
+      if (slots * perLabel <= availW) { step = s; break; }
+    }
   }
-  axis.innerHTML = html;
+
+  /*
+    If the chosen step still could not possibly fit (an explicit "Hour" scale on
+    a 30-day window is a legitimate user request), thin the *labels* while keeping
+    the grid at the requested step. Honouring the user's scale matters more than
+    showing every label; an unreadable row of digits conveys nothing at all.
+  */
+  const slots = Math.floor(spanMin / step) + 1;
+  const maxLabels = Math.max(1, Math.floor(availW / perLabel));
+  const labelEvery = Math.max(1, Math.ceil(slots / maxLabels));
+
+  // Align ticks to wall-clock boundaries (multiples of the step) so an hour mark
+  // is on the hour, not 11 minutes past. The reference is local midnight, which
+  // is the same origin the date labels are computed from.
+  const startMs = from.getTime();
+  const stepMs = step * 60000;
+  const midnight = new Date(from);
+  midnight.setHours(0, 0, 0, 0);
+  const sinceMidnight = startMs - midnight.getTime();
+  let first = midnight.getTime() + Math.ceil(sinceMidnight / stepMs) * stepMs;
+
+  let ticksHtml = '';
+  let labelsHtml = '';
+  let i = 0;
+  for (let t = first; t <= to.getTime(); t += stepMs, i++) {
+    const pct = ((t - startMs) / (to.getTime() - startMs)) * 100;
+    // A tick at exactly 100% draws its 1px border outside the axis box and makes
+    // the plot scroll. The window's end is shown in the header line above the
+    // chart anyway, so the final tick is skipped.
+    if (pct >= 100) break;
+    /*
+      Placement by position. A label normally hangs to the right of its tick, but
+      near either edge that runs off the axis: the leftmost label would be clipped,
+      and the rightmost (at exactly 100%) overflows the axis box — which both
+      clips it and makes the whole plot scroll horizontally for no reason. So a
+      label in the last ~6% is right-aligned against its tick, and the leading one
+      is nudged inwards. This is decided here rather than in CSS because "near the
+      edge" depends on which interval was chosen.
+    */
+    const edgeLeft = pct < 1;
+    const edgeRight = pct > 94;
+    ticksHtml += '<div class="tl-tick" style="left:' + pct + '%"></div>';
+    // Labels are thinned, but the first tick always gets one so the axis has an
+    // anchor at its left edge.
+    if (i % labelEvery === 0 || edgeLeft) {
+      const label = labelFor(new Date(t), step);
+      const align = edgeRight
+        ? 'transform:translateX(calc(-100% - 4px));'
+        : (edgeLeft ? 'transform:translateX(2px);' : '');
+      labelsHtml += '<span class="tl-ticklabel" style="left:' + pct + '%;'
+                  + align + '">' + label + '</span>';
+    }
+  }
+
+  axis.innerHTML = ticksHtml + labelsHtml;
 
   // Gridlines share the tick positions so bars can be read against the axis.
   const plot = chart.querySelector('.tl-plot');
   if (plot) {
     const grid = document.createElement('div');
     grid.className = 'tl-grid';
-    grid.innerHTML = html.replace(/tl-tick/g, 'tl-gline');
+    grid.innerHTML = ticksHtml.replace(/tl-tick/g, 'tl-gline');
     plot.insertBefore(grid, plot.firstChild);
   }
 })();
@@ -298,8 +391,21 @@
                background: var(--panel); min-width: 100%; }
     .tl-tick, .tl-gline { position: absolute; top: 0; bottom: 0;
                           border-left: 1px solid var(--line); }
-    .tl-tick span { position: absolute; top: 8px; left: 5px; font-size: 11px;
-                    color: var(--muted); white-space: nowrap; }
+    /*
+      Labels are siblings of the ticks, positioned by percentage from the same
+      origin, rather than children of them. That lets a label be placed without
+      inheriting the tick's 1px border box, and keeps the thinning logic (which
+      emits more ticks than labels) from having to carry empty spans.
+      translateX(4px) offsets the label off its own gridline; the collision budget
+      in the script accounts for it via LABEL_GAP.
+    */
+    .tl-ticklabel { position: absolute; top: 8px; font-size: 11px; color: var(--muted);
+                    white-space: nowrap; transform: translateX(4px);
+                    font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    /* Off-screen probe: measured once to size the collision budget, never shown. */
+    .tl-tick-probe { position: absolute; visibility: hidden; white-space: nowrap;
+                     font-size: 11px; font-family: var(--mono);
+                     font-variant-numeric: tabular-nums; }
     .tl-grid { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
     .tl-gline { opacity: .4; }
     .tl-rows { position: relative; z-index: 1; }
@@ -364,6 +470,10 @@
                    color: var(--warn); letter-spacing: .04em; }
     .tl-lbl { position: absolute; left: calc(100% + 6px); top: -2px; font-size: 10px;
               color: var(--muted); white-space: nowrap; }
+    /* A bar near the right edge hangs its label off the left instead of the right,
+       where the shell's overflow:hidden would clip it. Decided in
+       TimelineViewHelper.labelFlipped (it depends on bar position), styled here. */
+    .tl-lbl.tl-lbl-left { left: auto; right: calc(100% + 6px); }
     .tl-norun { position: absolute; left: 8px; top: 6px; font-size: 10px;
                 color: var(--warn); border: 1px dashed var(--warn); border-radius: 3px;
                 padding: 0 6px; height: 14px; line-height: 12px; }

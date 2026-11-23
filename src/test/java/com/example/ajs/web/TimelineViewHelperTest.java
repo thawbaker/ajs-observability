@@ -100,6 +100,39 @@ class TimelineViewHelperTest {
         assertThat(helper.gapDisplay(3660L)).isEqualTo("1h 1m");
     }
 
+    @Test
+    @DisplayName("duration labels flip inside the bar near the right edge, where they would be clipped")
+    void labelsFlipNearTheRightEdge() {
+        // A label hangs to the right of its bar, so a bar starting near the end of
+        // the window pushes the label outside the plot, where overflow:hidden cuts
+        // it to a fragment. The boundary is pinned either side of the threshold so
+        // the flip cannot silently move.
+        assertThat(helper.labelFlipped(FROM, TO, run(FROM, 60))).isFalse();
+        assertThat(helper.labelFlipped(FROM, TO, run(FROM.plusHours(1), 60))).isFalse();
+
+        // 87.5% -- just inside the threshold, label still on the right.
+        LocalDateTime justBefore = FROM.plusMinutes((long) (24 * 60 * 0.875));
+        assertThat(helper.leftPercent(FROM, TO, justBefore)).isLessThan(TimelineViewHelper.LABEL_FLIP_PCT);
+        assertThat(helper.labelFlipped(FROM, TO, run(justBefore, 60))).isFalse();
+
+        // 88% exactly and beyond -- label moves to the left of the bar.
+        // 1267.2 minutes truncates below the threshold (87.99%), so the exact
+        // boundary is expressed in seconds to avoid a float-cast surprise in the
+        // test itself.
+        LocalDateTime atThreshold = FROM.plusSeconds((long) (86400 * 0.88));
+        assertThat(helper.leftPercent(FROM, TO, atThreshold)).isGreaterThanOrEqualTo(TimelineViewHelper.LABEL_FLIP_PCT);
+        assertThat(helper.labelFlipped(FROM, TO, run(atThreshold, 60))).isTrue();
+        assertThat(helper.labelFlipped(FROM, TO, run(TO.minusMinutes(10), 60))).isTrue();
+    }
+
+    @Test
+    @DisplayName("label flip is false for a missing run rather than throwing")
+    void labelFlipToleratesMissingRun() {
+        // The template evaluates this for every bar; a null run must not fail the
+        // page render, and "not flipped" is the rendering that was always used.
+        assertThat(helper.labelFlipped(FROM, TO, null)).isFalse();
+    }
+
     private static JobRun run(LocalDateTime start, int seconds) {
         return new JobRun("J", 1, start, "N", seconds);
     }

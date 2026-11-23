@@ -239,8 +239,40 @@ public class TimelineViewHelper {
         return round2(leftPercent(from, to, now));
     }
 
-    private static long windowSeconds(LocalDateTime from, LocalDateTime to) {
-        long seconds = Duration.between(from, to).getSeconds();
+    /**
+     * Threshold, in percentage points from the right edge, beyond which a run's
+     * duration label is drawn to the *left* of its bar instead of the right.
+     *
+     * <p>The label is absolutely positioned at {@code left: 100% + 6px} of the bar,
+     * so a bar near the end of the window pushes its label outside the plot, where
+     * the chart shell's {@code overflow: hidden} clips it — a run at 99% rendered
+     * as the fragment "2:". Flipping the label needs to know where the bar is,
+     * and the bar's position is percentage arithmetic, so the decision belongs here
+     * with the rest of it rather than in a template conditional.
+     *
+     * <p>The threshold is a position, not a width: a bar that *starts* past this
+     * point has less than this much room to its right regardless of how long it
+     * is. 12% was chosen against the narrowest realistic plot (~500px, see the
+     * class comment on widths); a label is about 40-50px there, so 12% leaves the
+     * label room to sit inside the bar's own row without reaching the edge.
+     */
+    static final double LABEL_FLIP_PCT = 88.0;
+
+    /**
+     * Whether a run's duration label should be drawn inside/left of its bar
+     * rather than hanging off its right edge.
+     *
+     * @return true when the bar begins close enough to the right edge that a
+     *         right-hand label would be clipped
+     */
+    public boolean labelFlipped(LocalDateTime from, LocalDateTime to, JobRun run) {
+        if (run == null || run.startedAt() == null || from == null || to == null) {
+            return false;
+        }
+        return leftPercent(from, to, run.startedAt()) >= LABEL_FLIP_PCT;
+    }
+
+    private static long windowSeconds(LocalDateTime from, LocalDateTime to) {        long seconds = Duration.between(from, to).getSeconds();
         // A zero-length window would divide by zero. Callers reject inverted
         // ranges, but this is a public bean method, so it defends itself.
         return seconds <= 0 ? 1 : seconds;
