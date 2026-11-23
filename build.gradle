@@ -35,6 +35,12 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    // Caching for the read-only AJS queries. This is flow control, not a performance
+    // tweak: it is what stops a user holding F5 from issuing a master-file scan per
+    // keypress (risk R6, req.txt §6). It brings in no cache provider -- the TTL
+    // implementation in CacheConfig is deliberately ours, see the note there on why
+    // Caffeine is not worth a dependency for six entries.
+    implementation 'org.springframework.boot:spring-boot-starter-cache'
 
     // ---------------------------------------------------------------------
     // Authentication and administration store.

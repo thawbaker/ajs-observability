@@ -350,6 +350,49 @@ class JdbcAjsRepositoryTest {
                 .isEmpty();
     }
 
+    @Test
+    @DisplayName("the assumed job scale is a documented constant, and the fixture sits below it")
+    void fixtureIsWithinTheAssumedScale() {
+        // The unqualified master read is justified by req.txt's "a few thousand
+        // jobs". If the fixture ever grows past the guard, the warning path is
+        // being exercised by every test rather than only by the test for it.
+        assertThat(JdbcAjsRepository.ASSUMED_SCALE_JOBS).isGreaterThan(500);
+        assertThat(repository.countJobs()).isLessThan(JdbcAjsRepository.ASSUMED_SCALE_JOBS);
+    }
+
+    @Test
+    @DisplayName("repeated master reads are served from cache, not re-queried")
+    void repeatedReadsAreCached() {
+        // Proves the wiring as well as the annotation: @Cacheable only takes effect
+        // through the Spring proxy this test gets injected.
+        List<AjsJob> first = repository.findAllJobs();
+        List<AjsJob> second = repository.findAllJobs();
+
+        assertThat(second).isSameAs(first);
+    }
+
+    @Test
+    @DisplayName("the calendar is cached per date, including across the self-invocation gap")
+    void calendarIsCachedPerDate() {
+        // This pins a bug that was found by counting statements, not by reading
+        // code. findScheduledOn calls findAllJobs() by self-invocation, which
+        // bypasses the Spring proxy, so it does NOT inherit findAllJobs' cache:
+        // five calendar dates produced five master-file reads. The method carries
+        // its own @Cacheable as a result, and this test fails if that annotation is
+        // ever moved or lost.
+        LocalDate date = LocalDate.of(2025, 11, 3);
+
+        List<AjsJob> first = repository.findScheduledOn(date);
+        List<AjsJob> second = repository.findScheduledOn(date);
+
+        // Same instance, i.e. served from the cache rather than recomputed.
+        assertThat(second).isSameAs(first);
+
+        // A different date is a different key, so it must not alias the first.
+        List<AjsJob> otherDate = repository.findScheduledOn(LocalDate.of(2025, 11, 9));
+        assertThat(otherDate).isNotSameAs(first);
+    }
+
     private AjsJob job(String name) {
         Optional<AjsJob> found = repository.findAllJobs().stream()
                 .filter(j -> j.jobName().equals(name))

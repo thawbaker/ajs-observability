@@ -58,11 +58,30 @@ management:
       show-details: when-authorized
 
 ajs:
-  # Polling cadence from req.txt §6. Deliberately conservative: aggressive
-  # polling consumes IBM i jobs and CPU (risk R6).
+  # Cache lifetimes for the IBM i queries. These are the flow-control control
+  # for risk R6, and they are the only thing bounding partition load: there is
+  # deliberately no background poller, so an idle process issues no queries at
+  # all (see CacheConfig). Load exists only when a user looks, and a TTL caps
+  # what a burst of page views can cost.
+  #
+  # The keyword is "polling" because req.txt §6 uses it, but nothing here polls:
+  # these are maximum staleness caps, not a fetch interval. An operator reading a
+  # page may see data up to this old.
+  #
+  #   inventory-seconds: job definitions + command lists. These change when
+  #     someone edits AJS, not continuously, so a long TTL is safe and keeps the
+  #     master-file scan off the hot path.
+  #   live-seconds: completion/held/never-run lists. These move whenever a job
+  #     finishes, so they are short — this is the number to lower if operators
+  #     complain that a fresh failure is not showing yet.
   polling:
     inventory-seconds: 900
     live-seconds: 60
+    # Escape hatch for debugging a stale reading. NOTE: Spring Boot's own
+    # spring.cache.type=none is IGNORED by this application -- CacheConfig
+    # declares a @Primary CacheManager, which wins over the auto-configuration
+    # that property controls. Use this switch instead; it is tested.
+    cache-enabled: true
   # Fail loudly at startup if QUSRIJS does not look the way we expect (risk R1).
   schema-validation:
     enabled: true
