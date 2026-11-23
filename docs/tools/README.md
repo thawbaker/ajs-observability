@@ -90,6 +90,18 @@ A dashboard capture that is a flat band of colour means the timeline's
   review C1), the create-user and sign-out calls in the script read `_csrf` from a
   rendered form and submit it. A token-less POST returns 403, and `redirect:
   'manual'` surfaces that as status 0 rather than a status code.
+- **The theme is pinned, not inherited.** `AJS_CAPTURE_THEME` (default `dark`) is
+  written to `localStorage.ajs-theme` before every page loads, which is the key the
+  app's own toggle writes. Without it the figures came out light while the rest of
+  the documentation was dark, because headless Chromium reports a light
+  `prefers-color-scheme`. Set `AJS_CAPTURE_THEME=light` to regenerate the whole set
+  in the light theme; every figure then renders correctly, including the trim.
+- **`trim.mjs` reads the background colour from each image.** It used to hardcode
+  `#0f1419`, which matched neither theme's `--bg`, and that silently failed on
+  light captures: `-trim` matched nothing and the script reported success on an
+  image it had not resized. It now samples the corner pixel, and warns when a file
+  shows no vertical dead space (already trimmed, or a background that did not
+  match). The crop is a fixed point, so re-running it does not grow the image.
 
 ## When pages change
 

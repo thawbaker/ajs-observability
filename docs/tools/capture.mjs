@@ -17,6 +17,27 @@ import { join } from 'node:path';
 const BASE = process.argv[2] ?? 'http://localhost:18090';
 const OUT = process.argv[3] ?? join(import.meta.dirname, '..', 'screenshots');
 
+/**
+ * Theme for the captures.
+ *
+ * The application now has a light/dark toggle and defaults to the OS preference,
+ * which headless Chromium reports as *light* — so without this, the figures would
+ * come out light while the rest of the documentation was produced in dark. Dark is
+ * the app's canonical theme, so it is pinned explicitly.
+ *
+ * Pinned via localStorage rather than a DOM poke on the root element: that is
+ * exactly what the toggle writes, it survives navigation, and it matches what a
+ * returning user would see. `evaluateOnNewDocument` makes it apply before the
+ * page's own head script reads it, so no figure catches a flash of the wrong theme.
+ */
+const THEME = process.env.AJS_CAPTURE_THEME ?? 'dark';
+
+async function applyTheme(page) {
+  await page.evaluateOnNewDocument((theme) => {
+    try { localStorage.setItem('ajs-theme', theme); } catch (e) { /* ignore */ }
+  }, THEME);
+}
+
 const CHROME_CANDIDATES = [
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser',
@@ -146,6 +167,7 @@ try {
   {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
+    await applyTheme(page);
     await page.setViewport(VIEWPORT);
     for (const spec of PAGES.filter((p) => p.as === 'anonymous')) {
       await page.setViewport(AUTH_VIEWPORT);
@@ -162,6 +184,7 @@ try {
   {
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
+    await applyTheme(page);
     await page.setViewport(VIEWPORT);
     await signIn(page, ADMIN);
 
@@ -184,6 +207,7 @@ try {
     // --- ordinary user session, in a separate context ----------------------
     const viewerContext = await browser.createBrowserContext();
     const viewerPage = await viewerContext.newPage();
+    await applyTheme(viewerPage);
     await viewerPage.setViewport(VIEWPORT);
     await ensureViewer(viewerPage, page);
 
