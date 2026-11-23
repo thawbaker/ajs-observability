@@ -844,6 +844,107 @@ show the current UI. Two things about the capture process are worth knowing:
 
 ---
 
+## 7a. What this costs the partition
+
+The requirement behind this section is risk R6: *"polling too aggressively can
+consume IBM i jobs/CPU"*. The question an operator actually asks is narrower —
+"will putting this dashboard in front of production make production slower?" — so
+it is answered with the load shape rather than with reassurance.
+
+**There is no poller.** Grep for it: no `@Scheduled`, no `@EnableScheduling`, no
+`ExecutorService`, no `Thread`, no client-side `setInterval`. Every query is issued
+because a user opened a page. Zero users means zero queries — a stronger guarantee
+than any interval, and one that no configuration mistake can break.
+
+**The `ajs.polling.*` names are cache lifetimes, not a fetch cadence.** They are
+called "polling" because `req.txt` §6 uses that word, but nothing polls. An
+operator reading a page may see data up to that old. This distinction matters: an
+earlier revision of `application.yml` carried these keys with no code reading them
+at all, which is worse than having no config, because the next person reasons from
+it.
+
+### Measured, not asserted
+
+The claim "caching works" was tested by counting actual SQL statements with
+`JdbcTemplate` at DEBUG, over a fixed sequence of seven page views (three
+`/overview`, two `/failures`, two `/jobs`) after one sign-in:
+
+| | `QAIJSMST` reads | `QAIJSHST` reads |
+| --- | --- | --- |
+| Cache disabled (`ajs.polling.cache-enabled=false`) | **10** | 0 |
+| Cache enabled (default) | **2** | 0 |
+
+The no-cache figure matches the predicted query shape exactly: 3 + (2 × 2 for
+failures, which read the completion code twice) + 2 = 9, plus one during the
+post-login landing. The enabled figure is 1 during landing plus 1 across all seven
+views.
+
+A `SELECT ... FROM users` appears once per request throughout. That is the **local
+SQLite auth store**, a different datasource — it never touches the IBM i, and
+counting it as partition load would be a category error.
+
+### The self-invocation trap, found by this measurement
+
+Caching the repository was not sufficient on its own, and the counting above is
+what caught it. `findScheduledOn` builds its answer by calling `findAllJobs()`
+**inside the same class**. Spring's `@Cacheable` works through a proxy, so a
+self-invocation runs the method body directly and skips the cache entirely.
+
+Measured: **five calendar views for five dates produced five master-file reads**,
+where the design intended one. Nothing failed, nothing logged a warning, and every
+page rendered correctly — which is exactly why it survived a code review.
+
+`findScheduledOn` now carries its own `@Cacheable` keyed by date. Verified after
+the change: six repeat views of *one* date produced **zero** reads. Five views of
+five *different* dates still produce five, which is correct — each date is a
+distinct result.
+
+A regression test pins this (`calendarIsCachedPerDate`), and it was confirmed to
+fail when the annotation is removed. The test exists because the failure mode is
+invisible: the page still works, it is just quietly expensive.
+
+This is worth stating as a general rule for this codebase: **any cached repository
+method that another method in the same class calls gets no caching from the
+annotation.** Either cache the caller as well, or move the call to the service
+layer.
+
+### Where the load could still grow
+
+`findAllJobs()` has **no `WHERE` clause**: it reads the whole master file. That is
+deliberate and load-bearing, because it is what allows next-run dates to be
+decoded in Java rather than compared in SQL (CYYMMDD versus a SQL date raises
+SQL0181, risk R2). It is justified only by `req.txt` §6's "a few thousand jobs".
+
+So the assumption is checked rather than trusted. The row count is compared
+against `JdbcAjsRepository.ASSUMED_SCALE_JOBS` (5,000) on every read, and a warning
+is logged once if exceeded. If that warning ever appears, the fix is to project
+only the columns the list views need and/or push the date filter into SQL — **not**
+to raise the constant.
+
+### Three things that cannot be settled without a partition
+
+Stated plainly, because "theoretically fine" is not the same as "verified".
+
+1. **Whether `QAIJSHST.HSDTE` has an access path.** The timeline's `BETWEEN` is
+   index-usable *if one exists*. Without a logical file over that column, DB2 for i
+   scans the file — cheap for a bounded range on a few hundred thousand rows, but
+   still a scan. Check with `DSPDBR FILE(QUSRIJS/QAIJSHST)` or `DSPFD`, or look for
+   an index containing `HSDTE`, before go-live.
+2. **The real row count in `QAIJSMST`.** The scale guard reports it at runtime; the
+   cheapest way to know in advance is `SELECT COUNT(*)` as the service profile, or
+   `DSPFD FILE(QUSRIJS/QAIJSMST)`. If the real figure is far above a few thousand,
+   the unqualified read is the first thing to change.
+3. **Actual DB2 for i timings.** Everything above is structural: statement counts
+   and bounds. It says nothing about milliseconds on the target hardware. The way
+   to convert this from theory to measurement is a short `STRDBMON` collection (or
+   `QSYS2.SQL_STATEMENT_STATISTICS` after the fact) while browsing each view once.
+
+That third point is the one to act on. The rest of this section reduces the number
+of statements and bounds each one; only the partition can say what a statement
+costs.
+
+---
+
 ## 8. Design review
 
 An honest critique of the current design, ordered by how much each issue matters
@@ -867,7 +968,7 @@ fixed before this is exposed beyond a handful of trusted users.**
 | C3 | Admin actions are not audited at all | Medium | Open |
 | C4 | A disabled app is hidden but still reachable (found while fixing C1) | Medium | **Fixed** |
 | C5 | Several service methods each re-read the whole master file | Low | Open |
-| C6 | No caching, and no actual poller | Low | Open |
+| C6 | No caching, and no actual poller | Low | **Caching fixed; no poller is deliberate** |
 | C7 | `LocalDate.now()` in domain code limits testability | Low | Open |
 | C8 | The timeline was not a governable app, so it could not be denied per user (found while documenting) | Medium | **Fixed** |
 
@@ -1192,17 +1293,36 @@ misses that the pattern is systemic; the real fix is per-request caching (C6).
 
 ### C6 — no caching, and no actual poller
 
-**Low now, Medium later.**
+**Low now, Medium later. Caching half fixed; the "no poller" half is a decision,
+not a defect.**
 
 `req.txt` §6 asks for adaptive polling and caching (R6: excessive polling can
-consume IBM i CPU). There is no poller and no cache: every page view is a fresh
-set of queries. That is simpler and safer than a poller, and for interactive use
-arguably better — but load is proportional to human page views, with no rate
-limit. A user holding F5 hammers the partition.
+consume IBM i CPU). The original finding was that neither existed, so load was
+proportional to human page views with no limit — a user holding F5 hammered the
+partition.
 
-If real-time views are added (Phase 4), this becomes the central design problem:
-**one scheduled poller with a cache and an adaptive interval, not per-request
-queries.** Do not add polling per page.
+**Fixed: caching.** The repository now caches the master-file reads, with two TTLs
+(`ajs.polling.inventory-seconds`, `live-seconds`). Measured with SQL statement
+counts over a fixed seven-view sequence: **10 reads without the cache, 2 with it**.
+It also collapses a duplicate that predated it — the failures page read the
+completion code twice per view. See §7a for the method and the numbers.
+
+One trap worth recording: `spring.cache.type=none` **does not disable this cache**.
+`CacheConfig` declares a `@Primary` `CacheManager`, which wins over the
+auto-configuration that property drives. Verified by running with the property set
+and watching the cache keep serving. The switch that works is
+`ajs.polling.cache-enabled=false`, which is tested.
+
+**Not fixed, on purpose: there is still no poller.** That remains the right answer
+for this application. A poller costs partition work when nobody is looking, which
+is the one thing a read-only observer should never do. A TTL cache is
+demand-driven and caps a burst, which is the actual failure mode. This diverges
+from `req.txt` §6's "adaptive polling" wording deliberately, and §7a records why.
+
+If a view is ever added that must be current *without* a user asking — a wall
+display, an alert — then it becomes a real design problem and the shape is **one
+scheduled poller with a cache and an adaptive interval, not per-request queries**.
+Do not add polling per page.
 
 ### C7 — `LocalDate.now()` in domain code
 
@@ -1480,7 +1600,7 @@ is a `SELECT`, and a test asserts no write reaches the fixture.
 | R3 | Privileged monitoring account |
 | R4 | "Running now" is not in the AJS master file |
 | R5 | DRDA may be firewalled |
-| R6 | Polling load on the partition |
+| R6 | Polling load on the partition — *no poller exists by design; a TTL cache bounds bursts. Measured in §7a, with the checks that still need a host.* |
 | R7 | AJS licensing is separate from `QUSRIJS` access |
 | R8 | Multi-partition drift |
 
