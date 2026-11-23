@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>It does <em>not</em> prove the real {@code QAIJSMST} has these columns. That
  * is risk R1, and only {@code DSPFFD} against a real partition can retire it. See
- * NOTES.md §12b.
+ * README.md §15.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -88,7 +88,7 @@ class FixtureSchemaConsistencyTest {
 
     /**
      * The command-list join is {@code CMJOB = JMJOB}, and the fixture's history key
-     * is an invented guess (NOTES.md §12, R1). Both are asserted here so that a
+     * is an invented guess (README.md §15, R1). Both are asserted here so that a
      * later "tidy-up" of the fixture cannot remove the columns those two decisions
      * depend on without a test failing.
      */

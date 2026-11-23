@@ -13,7 +13,7 @@
 #
 #   ./gradlew bootRun --args='--spring.profiles.active=local'
 #
-# It is NOT a substitute for testing against a real IBM i. See NOTES.md for the
+# It is NOT a substitute for testing against a real IBM i. See README.md for the
 # list of things this cannot validate (risk R1, R2 release behaviour, R4, DRDA).
 #
 # Never enable this profile in a deployed environment: it seeds fabricated job

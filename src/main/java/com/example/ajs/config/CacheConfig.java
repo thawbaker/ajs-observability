@@ -34,7 +34,7 @@ import java.util.concurrent.Callable;
  * </ol>
  *
  * <h2>Why a TTL and not a background poller</h2>
- * The alternative is what C6 in NOTES.md recommends for live views: one scheduled
+ * The alternative is what C6 in README.md recommends for live views: one scheduled
  * poller refreshing a cache on a timer. That is the right shape for a view that
  * must be current without a user asking, and the wrong shape here: it costs IBM i
  * work even when nobody is looking, which is precisely what this application

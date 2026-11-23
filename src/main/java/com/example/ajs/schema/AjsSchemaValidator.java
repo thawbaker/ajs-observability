@@ -68,7 +68,7 @@ public class AjsSchemaValidator implements ApplicationRunner {
 
         String message = "AJS schema drift detected (" + problems.size() + " problem(s)): "
                 + String.join("; ", problems)
-                + " — see NOTES.md risk R1. Layouts are not a published contract; "
+                + " — see README.md risk R1. Layouts are not a published contract; "
                 + "confirm with DSPFFD against the live partition.";
         if (failOnMissingColumns) {
             throw new IllegalStateException(message);

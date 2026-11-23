@@ -1,7 +1,7 @@
 # Host capture — one session, scripted
 
 The IBM i is on an internal network and is not reachable from where this was
-built. Everything in `NOTES.md` about the AJS layer rests on an **authored**
+built. Everything in `README.md` about the AJS layer rests on an **authored**
 schema. This directory is the script for the one session that can retire that
 assumption, written in advance so the session is execute-and-capture rather than
 explore-and-hope.
@@ -53,7 +53,7 @@ the application ignores.
 3. If `04-sample-rows.sql` produced usable rows, seed a **real** fixture beside
    the authored one — `data-ajs-real.sql` — and name it as an extraction in its
    header. An extracted fixture and an invented one must never be confused.
-4. Re-run `./gradlew test` and update `NOTES.md` §12b's "cannot prove offline"
+4. Re-run `./gradlew test` and update `README.md` section 15's "cannot prove offline"
    table with what is now proven.
 
 ## What this session cannot do

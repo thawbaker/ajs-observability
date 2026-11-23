@@ -8,7 +8,7 @@
 # simply point the app at H2 and still exercise jt400. Instead the tests replace
 # the entire AJS datasource with H2 in DB2 compatibility mode and drive the same
 # AjsRepository SQL. That validates SQL shape, mapping, decoding, controllers and
-# templates. What it cannot validate is listed in NOTES.md.
+# templates. What it cannot validate is listed in README.md.
 #
 # The auth store gets its own throwaway SQLite file per test run, so tests never
 # touch (or depend on) a developer's real data/auth.db.

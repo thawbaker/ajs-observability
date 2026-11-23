@@ -14,7 +14,7 @@
 #
 #   ./gradlew bootRun --args='--spring.profiles.active=ibmi'
 #
-# Once DSPFFD has confirmed the layouts (NOTES.md §12b), either keep using this
+# Once DSPFFD has confirmed the layouts (README.md §15), either keep using this
 # profile in production or move to the default one; the difference is only whether
 # drift is fatal. See docs/host-capture/ for the scripted session.
 

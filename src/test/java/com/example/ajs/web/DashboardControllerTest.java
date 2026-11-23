@@ -54,7 +54,7 @@ class DashboardControllerTest {
      * tests while the running application returned 401. Asserting "the gate is
      * closed" against a harness with no gate installed is worse than not testing
      * it, so the chain is wired explicitly here. The application itself was
-     * verified correct over real HTTP; see NOTES.md.
+     * verified correct over real HTTP; see README.md.
      */
     @BeforeEach
     void setUp() {

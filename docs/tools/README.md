@@ -1,11 +1,11 @@
 # Documentation tooling
 
 Generates the screenshots in `docs/screenshots/`, which are the figures in
-`NOTES.md` §4a. Nothing here is hand-assembled: the captures are of the real
+`README.md` section 12. Nothing here is hand-assembled: the captures are of the real
 pages, taken through the real sign-in flow.
 
 There is no generated HTML or PDF any more. The figures are embedded in
-`NOTES.md` directly, so there is exactly one document to keep in step. The
+`README.md` directly, so there is exactly one document to keep in step. The
 capture-and-trim steps below are unchanged; the render step is gone.
 
 ## Prerequisites
@@ -52,8 +52,8 @@ was silently image-less. Run the checks from `docs/tools/`:
 ls -1 ../screenshots/*.png | wc -l
 identify -format '%f %wx%h\n' ../screenshots/*.png
 
-# Every image referenced by NOTES.md exists.
-grep -o 'screenshots/[0-9a-z-]*\.png' ../../NOTES.md | sort -u | while read -r f; do
+# Every image referenced by the root README exists.
+grep -o 'screenshots/[0-9a-z-]*\.png' ../../README.md | sort -u | while read -r f; do
   test -f "../$f" || echo "MISSING: $f"
 done
 ```
@@ -65,7 +65,7 @@ A dashboard capture that is a flat band of colour means the timeline's
 
 | File | Role |
 |------|------|
-| `../../NOTES.md` | The document. §4a holds the figures and their captions. |
+| `../../README.md` | The document. Section 12 holds the figures and their captions. |
 | `../screenshots/*.png` | Generated captures at 2x scale. |
 | `capture.mjs` | Drives Chromium through sign-in and screenshots each page. |
 | `trim.mjs` | Crops the empty region below dashboard content. |
@@ -108,13 +108,13 @@ A dashboard capture that is a flat band of colour means the timeline's
 Adding a page or route means updating four places:
 
 1. `PAGES` in `capture.mjs` — add the path and a name.
-2. `NOTES.md` §4a — add the image and its caption, and renumber the figures.
+2. `README.md` section 12 — add the image and its caption, and renumber the figures.
 3. `AuthBootstrap.BUILT_IN_APPS` in the application, if the new page is a
    dashboard that should be individually grantable.
 4. `AppPermissionInterceptor.ROUTE_TO_SLUG` **and** `WebMvcConfig.addPathPatterns`
    — the route must be in both or the interceptor never runs. Missing the third
    and fourth entries is how the timeline ended up ungovernable (design review C8).
 
-The figure numbering in `NOTES.md` §4a is manual. If figures are inserted rather
+The figure numbering in `README.md` section 12 is manual. If figures are inserted rather
 than appended, renumber the captions and check the cross-reference in Figure 17,
 which compares itself to Figure 3.

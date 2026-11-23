@@ -214,7 +214,7 @@ class CsrfProtectionTest {
      * <p>Both are harness properties. Against the running application, a GET issues
      * the cookie, a POST succeeds with 302, and a later GET issues a fresh cookie;
      * and in Chromium sign-in reaches {@code /overview}. That is the evidence the
-     * browser path works, and it is recorded in NOTES.md.
+     * browser path works, and it is recorded in README.md.
      *
      * <p>The {@code csrf()} post-processor is used for the submission here precisely
      * because it is the only way to make this assertion independent of ambient

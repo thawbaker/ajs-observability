@@ -69,7 +69,7 @@ public class SecurityConfig {
                 // false — that there was "no HTML form POST from a browser session".
                 // There are ten browser form POSTs, including destructive admin
                 // actions (POST /admin/users/{id}/delete, /disabled, /role, plus the
-                // app and permission forms). See NOTES.md section 8.
+                // app and permission forms). See README.md §22.
                 //
                 // The repository is CookieCsrfTokenRepository, NOT the default
                 // HttpSession-backed one, and that choice is load-bearing.
