@@ -6,13 +6,21 @@ It answers the questions a 5250 session makes tedious: what is due today, what
 failed, what is held or never ran, and — via the timeline — when jobs actually
 ran and how long each took.
 
-This is the only prose document in the repository. It is written as a single
-narrative on purpose: the project's history is a sequence of decisions, and the
-order in which they were made is usually the fastest way to understand why the
-code looks the way it does. It also carries the illustrated walkthrough — the
-seventeen screenshots in §4a are the evidence behind the claims made here, so
-there is no separate illustrated README to keep in step. `req.txt` holds the
-original requirements, including the questions that are still open.
+This is the **design record**, and it is written as a single narrative on
+purpose: the project's history is a sequence of decisions, and the order in which
+they were made is usually the fastest way to understand why the code looks the
+way it does. It also carries the illustrated walkthrough — the seventeen
+screenshots in §4a are the evidence behind the claims made here.
+
+There is one other prose document, deliberately narrow: **`README.md`** covers
+setup, build, test and running against a real iSeries, and nothing else. The split
+is by audience, not by topic — someone who wants to *get it running* should not
+have to read a design argument to find a shell command, and someone reading the
+design record should not trip over installation steps. Everything about *why* the
+code is shaped this way stays here.
+
+`req.txt` holds the original requirements, including the questions that are still
+open.
 
 > **This application never writes to the IBM i.** Every query is a `SELECT`, and
 > the service profile it is designed to use has no `*JOBCTL` and no AJS function
@@ -71,7 +79,7 @@ loads the fabricated fixture and needs no host at all. Nothing else switches it.
 ### No IBM i: the `local` profile
 
 ```bash
-./gradlew test                                    # 173 tests, offline
+./gradlew test                                    # 187 tests, offline
 ./gradlew bootRun --args='--spring.profiles.active=local'
 #   bootstrap admin: admin@localhost / localdev1234
 #   browse http://localhost:8080
@@ -235,23 +243,24 @@ An optional fifth tier (real Db2 in Docker) is deliberately not wired up: Db2
 **LUW is not DB2 for i**, and LUW does not exercise the jt400 DRDA path at all,
 so it would add setup cost while validating almost nothing.
 
-**173 tests, 0 failures**, re-run with `--rerun-tasks` so nothing was cached.
+**187 tests, 0 failures**, re-run with `--rerun-tasks` so nothing was cached.
 
 | Suite | Tests | Tier | Covers |
 |-------|-------|------|--------|
 | `AjsDateDecodersTest` | 39 | 1 | CYYMMDD decode **and encode**, YYMMDD, HHMMSS, sentinels, display |
+| `JdbcAjsRepositoryTest` | 22 | 2 | SQL + mapping vs H2 `MODE=DB2`, run window, **bounded query (C2)**, cache identity |
 | `AuthFlowTest` | 19 | 4 | Real sign-in/up/out, role gating, disabled, tamper |
-| `JdbcAjsRepositoryTest` | 19 | 2 | SQL + mapping vs H2 `MODE=DB2`, run window, **bounded query (C2)** |
 | `DashboardControllerTest` | 19 | 3 | Thymeleaf rendering, auth required, timeline page, **window cap** |
 | `JwtServiceTest` | 18 | 4 | Sign/verify, expiry, tampering, secret validation |
 | `AjsObservabilityServiceTest` | 17 | 1 | View logic, `*NOSBM` rule, gaps, lanes, **run cap and honest totals** |
-| `PermissionDenylistTest` | 9 | 4 | Denylist semantics, cascade, per-user scoping |
-| `TimelineViewHelperTest` | 8 | 1 | Bar geometry, gaps, minimum width, edges |
-| `AppPermissionEnforcementTest` | 8 | 4 | Denylist, **disabled-app**, and **timeline** enforcement on routes |
+| `TimelineViewHelperTest` | 10 | 1 | Bar geometry, gaps, minimum width, edges, **edge-label flip** |
 | `CsrfProtectionTest` | 9 | 4 | CSRF is on; token-less POST 403s; first visit issues the cookie; token renders |
+| `PermissionDenylistTest` | 9 | 4 | Denylist semantics, cascade, per-user scoping |
+| `TtlCacheTest` | 9 | 1 | Read-time expiry, per-key expiry, loader reload, kill switch |
+| `AppPermissionEnforcementTest` | 8 | 4 | Denylist, **disabled-app**, and **timeline** enforcement on routes |
+| `FixtureSchemaConsistencyTest` | 4 | 2 | Fixture and mappers agree on columns; validator's requirements exist |
 | `SecurityWiringTest` | 3 | 4 | Chain installed, bcrypt is real bcrypt |
 | `MockMvcSecurityDiagnosticTest` | 1 | 4 | Isolates harness vs application security |
-| `FixtureSchemaConsistencyTest` | 4 | 2 | Fixture and mappers agree on columns; validator's requirements exist |
 
 > Counts are per top-level test class; JUnit nested classes
 > (`AjsDateDecodersTest$Cyymmdd` and friends) are folded into their parent.
