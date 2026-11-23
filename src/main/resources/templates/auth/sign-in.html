@@ -6,7 +6,12 @@
   Standalone page: no main navigation, because everything behind it requires a
   session. Signing out is a POST form, not a link, so a prefetch or crawler
   cannot log a user out.
+
+  The theme toggle is repeated here as a floating button because this page has no
+  header to hold it; both branches share the `themeToggle` fragment, so there is
+  one definition of the icon and one click handler (in the head fragment).
 -->
+<th:block th:replace="~{layout :: themeToggle(true)}"/>
 <div class="auth-wrap">
     <div class="auth-card">
         <h1>AJS Observability</h1>

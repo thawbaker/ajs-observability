@@ -2,6 +2,8 @@
 <html xmlns:th="http://www.thymeleaf.org">
 <head th:replace="~{layout :: head('Sign up')}"></head>
 <body>
+<!-- No header on this page, so the theme toggle floats in the corner. -->
+<th:block th:replace="~{layout :: themeToggle(true)}"/>
 <div class="auth-wrap">
     <div class="auth-card">
         <h1>Create account</h1>

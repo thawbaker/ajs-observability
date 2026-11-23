@@ -5,6 +5,45 @@
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title th:text="${title} + ' — AJS Observability'">AJS Observability</title>
+    <script>
+        /*
+          Theme, applied as early as possible — in <head>, before the body is
+          painted — so a dark-preference user does not get a white flash while
+          the document parses. This is the whole reason the script is not at the
+          end of the body like the timeline's axis-tick script.
+
+          Precedence: an explicit choice (localStorage) beats the OS preference.
+          The choice is stored rather than the resolved colour, so a user who
+          never pressed the button keeps following their OS when it switches at
+          sunset. No value stored means "follow the OS".
+
+          The app still renders correctly with scripting disabled: the dark
+          theme is the CSS default and no template depends on this flag.
+        */
+        (function () {
+            var stored = null;
+            try { stored = localStorage.getItem('ajs-theme'); } catch (e) { /* private mode */ }
+            var theme = stored
+                || (window.matchMedia
+                    && window.matchMedia('(prefers-color-scheme: light)').matches
+                    ? 'light' : 'dark');
+            document.documentElement.setAttribute('data-theme', theme);
+
+            /*
+              One delegated listener, installed here rather than next to the
+              button, so it is present for every page and for both the header
+              toggle and the floating one on the auth pages.
+            */
+            document.addEventListener('click', function (e) {
+                var btn = e.target.closest ? e.target.closest('[data-theme-toggle]') : null;
+                if (!btn) return;
+                var root = document.documentElement;
+                var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+                root.setAttribute('data-theme', next);
+                try { localStorage.setItem('ajs-theme', next); } catch (err) { /* private mode */ }
+            });
+        })();
+    </script>
     <style>
         /*
           Palette and surface tokens, adapted from the sssf visualizer
@@ -31,6 +70,21 @@
           loop. This app has no build step and no JS requirement (NOTES.md §7), and
           polling IBM i on a browser timer is the anti-pattern risk R6 warns about.
         */
+        /*
+          THEME. Every colour below is a token, and the light theme in
+          html[data-theme="light"] re-points the same tokens rather than
+          overriding rules. That is the same discipline the palette comment
+          describes: one place to change, no edits in the templates.
+
+          Two extra indirections had to be pulled out of the rules to make the
+          switch work, because they were literal hex values in rule bodies:
+            --row-hover  the tbody row hover tint
+            --on-accent  text drawn on top of the --accent fill
+            --header-bg  the sticky header's translucent backdrop
+            --aurora-*   the two radial washes in the body background
+          These are not new design decisions, only names for colours that were
+          already there.
+        */
         :root {
             --bg: #06080f; --panel: #0d1119; --panel-2: #131a26; --panel-3: #0a0e16;
             --line: #232c3d; --line-soft: #222b3d;
@@ -40,10 +94,43 @@
             --cyan: #5ad2dd; --violet: #94a3ff;
             /* One surface recipe, shared by every card and panel. */
             --surface: linear-gradient(180deg, #10141f 0%, #0b0f18 100%);
+            --row-hover: #161d26;
+            --on-accent: #06121f;
+            --header-bg: rgba(6, 8, 15, .88);
+            --body-bg: linear-gradient(180deg, #06080f 0%, #090d17 100%);
+            --aurora-1: rgba(148, 163, 255, .09);
+            --aurora-2: rgba(90, 210, 221, .07);
+            /* Tag outlines are mixed against the line colour so they stay legible
+               when the line colour inverts. */
+            --tag-bad: #5c2b2b; --tag-ok: #2b4c2f; --tag-warn: #5c4a1f;
             --sans: 'Play', 'Helvetica Neue', system-ui, -apple-system, sans-serif;
             --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco,
                     'Cascadia Mono', 'Roboto Mono', monospace;
             --row-h: 28px;
+            color-scheme: dark;
+        }
+        /*
+          Light theme. Not an inversion: the aurora wash is dialled right back
+          (a violet glow on white reads as a smudge), the accent darkens so it
+          keeps 4.5:1 against white, and the status colours darken for the same
+          reason. The mono-for-data and layered-surface rules are unchanged.
+        */
+        html[data-theme="light"] {
+            --bg: #f6f8fc; --panel: #ffffff; --panel-2: #eef2f8; --panel-3: #f2f5fa;
+            --line: #d3dbe7; --line-soft: #dde4ee;
+            --fg: #101725; --muted: #4a5a72; --faint: #6b7c94;
+            --accent: #1668c4;
+            --ok: #15803d; --warn: #a16207; --bad: #c02b23;
+            --cyan: #0e7490; --violet: #4f46e5;
+            --surface: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
+            --row-hover: #eaf0f8;
+            --on-accent: #ffffff;
+            --header-bg: rgba(246, 248, 252, .9);
+            --body-bg: linear-gradient(180deg, #f6f8fc 0%, #eef2f9 100%);
+            --aurora-1: rgba(79, 70, 229, .05);
+            --aurora-2: rgba(14, 116, 144, .04);
+            --tag-bad: #e6b4b0; --tag-ok: #a7d3b4; --tag-warn: #ddc38a;
+            color-scheme: light;
         }
         * { box-sizing: border-box; }
         body {
@@ -53,9 +140,9 @@
                across a room, and 14px was working against that. */
             font-size: 15px; line-height: 1.5;
             background:
-                radial-gradient(1100px 700px at 8% -10%, rgba(148, 163, 255, .09), transparent 62%),
-                radial-gradient(1000px 720px at 102% 108%, rgba(90, 210, 221, .07), transparent 60%),
-                linear-gradient(180deg, #06080f 0%, #090d17 100%);
+                radial-gradient(1100px 700px at 8% -10%, var(--aurora-1), transparent 62%),
+                radial-gradient(1000px 720px at 102% 108%, var(--aurora-2), transparent 60%),
+                var(--body-bg);
             background-attachment: fixed;
             min-height: 100vh;
         }
@@ -63,9 +150,28 @@
             border-bottom: 1px solid var(--line); padding: 14px 24px;
             display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap;
             position: sticky; top: 0; z-index: 10;
-            background: rgba(6, 8, 15, .88);
+            background: var(--header-bg);
             backdrop-filter: blur(8px);
         }
+        /*
+          The toggle. An icon button, not a labelled control: it sits in the
+          header next to the sign-out button and needs to read at a glance.
+          Both glyphs are rendered and one is hidden by CSS off the data-theme
+          attribute — so the icon is correct on first paint, before any script
+          runs, including on the standalone auth pages.
+        */
+        .theme-toggle {
+            display: inline-flex; align-items: center; justify-content: center;
+            background: none; border: 1px solid var(--line); color: var(--muted);
+            border-radius: 6px; padding: 3px 7px; cursor: pointer; line-height: 0;
+        }
+        .theme-toggle:hover { color: var(--fg); border-color: var(--accent); }
+        .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .theme-toggle svg { width: 14px; height: 14px; display: block; }
+        .theme-toggle .i-sun { display: none; }
+        /* In light mode we offer the moon ("switch to dark"). */
+        html[data-theme="light"] .theme-toggle .i-sun { display: block; }
+        html[data-theme="light"] .theme-toggle .i-moon { display: none; }
         header h1 { font-size: 16px; margin: 0; font-weight: 600; }
         header .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
         nav { display: flex; gap: 16px; }
@@ -103,16 +209,16 @@
         /* Numeric columns align on the digit, which is the whole reason to set
            them in mono in the first place. */
         td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
-        tbody tr:hover { background: #161d26; }
+        tbody tr:hover { background: var(--row-hover); }
         tr.dim td { opacity: .7; }
         .tag {
             display: inline-block; padding: 1px 7px; border-radius: 10px;
             font-size: 11px; border: 1px solid var(--line); color: var(--muted);
             white-space: nowrap;
         }
-        .tag.bad { color: var(--bad); border-color: #5c2b2b; }
-        .tag.ok { color: var(--ok); border-color: #2b4c2f; }
-        .tag.warn { color: var(--warn); border-color: #5c4a1f; }
+        .tag.bad { color: var(--bad); border-color: var(--tag-bad); }
+        .tag.ok { color: var(--ok); border-color: var(--tag-ok); }
+        .tag.warn { color: var(--warn); border-color: var(--tag-warn); }
         .empty { color: var(--muted); padding: 14px 0; font-style: italic; }
         .note {
             background: var(--panel); border: 1px solid var(--line);
@@ -158,7 +264,7 @@
         }
         .field input:focus { outline: none; border-color: var(--accent); }
         .btn-primary {
-            width: 100%; background: var(--accent); color: #06121f; border: 0;
+            width: 100%; background: var(--accent); color: var(--on-accent); border: 0;
             border-radius: 6px; padding: 9px 14px; font-weight: 600; font-size: 14px;
             cursor: pointer; margin-top: 6px;
         }
@@ -181,6 +287,17 @@
         input[type="text"], input[type="email"], input[type="password"], select {
             background: var(--bg); color: var(--fg); border: 1px solid var(--line);
             border-radius: 6px; padding: 5px 8px; font-size: 13px;
+        }
+        /*
+          Auth pages have no <header>, so the toggle floats in the top-right
+          corner of the viewport instead. Fixed rather than absolute so it stays
+          put on a short sign-in page with no scroll. The fill is deliberately left
+          transparent, matching the header button: against an otherwise empty page a
+          filled pill reads as a button in a toolbar that is not there.
+        */
+        .theme-toggle.floating {
+            position: fixed; top: 16px; right: 16px; z-index: 20;
+            background: none; padding: 5px 8px;
         }
     </style>
 </head>
@@ -209,7 +326,34 @@
         <form th:action="@{/auth/sign-out}" method="post">
             <button type="submit">Sign out</button>
         </form>
+        <th:block th:replace="~{layout :: themeToggle(false)}"/>
+    </span>
+    <!-- The signed-out branch exists so a header rendered without a session
+         (an error page, say) still gets a toggle. -->
+    <span class="who" sec:authorize="!isAuthenticated()">
+        <th:block th:replace="~{layout :: themeToggle(false)}"/>
     </span>
 </header>
+
+<!--
+  The toggle button, shared by the header and by the standalone auth pages,
+  which have no <header>. Both glyphs are always in the DOM; CSS picks one from
+  the data-theme attribute, so the icon is right before any script runs. The
+  click handler itself lives in the head fragment.
+-->
+<button th:fragment="themeToggle(floating)" type="button" data-theme-toggle
+        th:classappend="${floating} ? 'floating' : ''"
+        class="theme-toggle"
+        aria-label="Toggle light and dark mode" title="Toggle light and dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+    </svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+    </svg>
+</button>
 </body>
 </html>
