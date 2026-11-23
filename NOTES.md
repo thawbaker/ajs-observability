@@ -638,9 +638,10 @@ of the others could: *when did jobs actually run, and how long did each take?*
 scheduling pile-up or a runaway step is visible without reading numbers.
 
 **Dynamic time scale:** `Auto` / `15 min` / `Hour` / `6 hour` / `Day`. `Auto`
-picks the finest bucket that keeps the tick count readable, so the scale adapts
-to the window. The scale is validated against a fixed set in `DashboardController`
-rather than trusted, because it drives tick arithmetic.
+picks the finest interval whose labels still fit across the plot, so the scale
+adapts to the window *and* to the viewport. The scale is validated against a fixed
+set in `DashboardController` rather than trusted, because it drives tick
+arithmetic.
 
 Behaviours that are deliberate and should not be "simplified":
 
@@ -661,6 +662,51 @@ Behaviours that are deliberate and should not be "simplified":
   `TimelineViewHelper`; the only script on the page draws axis ticks, and with it
   disabled the bars stay correct and only the labels disappear. On a monitoring
   page, "goes blank when a script fails" is a real failure mode.
+
+### Axis labels never collide
+
+Tick spacing is chosen by **measurement, not by a hardcoded count**. This was a
+real bug: the first version capped ticks at 100 and picked an interval from the
+window length alone, ignoring how much room the labels had. A 4-day window chose
+the 60-minute interval, drew 96 labels into ~825px, and the axis became an
+unreadable smear. The defect survived review because it only appears on wide
+windows — a one-day window looks fine.
+
+The fix measures, at render time: the plot's client width, and one representative
+label's width in the axis's own font (a `visibility: hidden` probe span, since
+`"12:34 PM"` and `"19 Nov"` differ and the font is theme-inherited). From those
+it picks the smallest interval from a list of human-readable steps — 1, 2, 5, 10,
+15, 30 minutes, then hours and days — whose labels fit at `labelWidth + 14px`
+spacing.
+
+Two decisions worth keeping:
+
+- **Ticks and labels are decoupled.** The grid stays at the finest sensible
+  interval so bars can be read against a dense grid, while labels are thinned to
+  whatever fits (`i % labelEvery`). Choosing `Hour` on a 30-day window legitimately
+  produces ~720 gridlines and about a dozen labels; refusing the user's scale, or
+  drawing 720 labels, would both be worse.
+- **Ticks align to wall-clock boundaries** — multiples of the interval since local
+  midnight — so an hour mark is on the hour rather than 11 minutes past it.
+
+Verified by measuring, not by eye: a script logged into the app and counted label
+pairs whose bounding boxes intersect, over 2-hour, 24-hour, 4-day and 30-day
+windows, at 1100px and 520px viewport widths, plus the explicit `hour` scale on a
+4-day window. Zero overlaps in every case; the 4-day window went from ~96 colliding
+labels to 9.
+
+**Two overflow bugs the screenshots exposed.** A tick at exactly 100% drew its 1px
+border outside the axis box, and a label there hung past the right edge — together
+they made the whole plot scroll horizontally for no reason. The last tick is now
+skipped (the window end is stated in the header line above the chart anyway) and a
+label in the final ~6% is right-aligned against its tick instead of left.
+
+Separately, a bar's *duration* label (`.tl-lbl`) always hung to the right of its
+bar, so a run starting near the end of the window pushed its label outside the
+chart shell, where `overflow: hidden` cut it to a fragment — one figure showed
+`2:` instead of `2m 25s`. That decision depends on bar position, so it lives in
+`TimelineViewHelper.labelFlipped` and is unit-tested either side of its threshold,
+following the rule that percentage arithmetic does not belong in a `th:style`.
 
 Percentage arithmetic lives in `TimelineViewHelper` rather than in template
 expressions. It is logic, and logic in a `th:style` attribute cannot be tested —
@@ -714,6 +760,52 @@ The bar vocabulary is `ok` / `abnormal` / `long` / `running` / `not run`. The
 `long` class is a real domain classification (> 30 minutes, in Java), not a style
 applied in the template — the same rule as everywhere else in this view.
 
+### Light and dark themes
+
+There is a sun/moon toggle in the header of every page, and floating in the corner
+of the two standalone auth pages (sign-in, sign-up), which have no header. The
+choice is remembered in `localStorage` under `ajs-theme`.
+
+The implementation follows the rule the palette in `layout.html` already stated:
+**re-point the tokens, do not override rules**. The light theme is one
+`html[data-theme="light"]` block that re-declares `--bg`, `--panel`, `--fg`,
+`--accent` and the status colours. No template had to change, which is the same
+argument the original palette comment made for keeping the token names.
+
+Four colours were literal hex values inside rule bodies and had to be lifted into
+tokens to make the switch work: `--row-hover`, `--on-accent` (text on the accent
+fill), `--header-bg` (the sticky header's translucent backdrop) and the two
+`--aurora-*` washes. These name colours that were already there; they are not new
+design decisions. The tag outlines also became tokens (`--tag-ok` and friends),
+because a border mixed for a dark background is invisible on a light one.
+
+The light palette is not an inversion. The aurora wash is dialled right back (a
+violet glow on white reads as a smudge) and the accent and status colours are
+darkened so they keep contrast against white rather than glowing.
+
+Two implementation notes worth keeping:
+
+- **The theme is applied in `<head>`, before the body paints.** A script at the end
+  of the body — where the timeline's tick script lives — would show a white flash
+  to a dark-mode user on every page load. The precedence is an explicit stored
+  choice, falling back to `prefers-color-scheme`, so a user who never pressed the
+  button keeps following their OS when it switches at sunset.
+- **Both glyphs are always in the DOM** and CSS hides one based on `data-theme`,
+  so the icon is correct on first paint and does not wait for the script. With
+  scripting disabled the page still renders in the default dark theme, which is
+  the same no-JS deal the timeline makes: a missing enhancement degrades the
+  appearance, not the content.
+
+`localStorage` access is wrapped in `try`/`catch` because it throws in some
+private-browsing modes; a user in those modes gets a working toggle that simply
+forgets their choice.
+
+**Known defect seen while verifying, not caused by this change:** with a wide
+window (e.g. 4 days), the timeline's auto scale picked the 60-minute bucket and
+rendered up to ~96 tick labels in a single row, where they overlapped into an
+unreadable smear. This was present in both themes. **Since fixed** — see "Axis
+labels never collide" in §7.
+
 ### Fixture history
 
 `data-ajs.sql` seeds 20 `QAIJSHST` rows across 2025-11-19..21: an overlapping
@@ -725,8 +817,30 @@ job is silently undisplayable.
 `docs/screenshots/17-timeline.png` is the current figure, and `capture.mjs` now
 captures it. It uses a **tall viewport rather than `fullPage`**, because the theme's
 `background-attachment: fixed` produces a solid band in a full-page capture — the
-first attempt produced an unusable image that looked correct in the exit code. The
-older figures in `docs/screenshots/` predate the restyle and should be regenerated.
+first attempt produced an unusable image that looked correct in the exit code.
+
+All seventeen figures were regenerated after the theme and axis work, so they now
+show the current UI. Two things about the capture process are worth knowing:
+
+- **`capture.mjs` pins the theme to dark** (`AJS_CAPTURE_THEME`, default `dark`).
+  Without it the figures came out light, because headless Chromium reports a light
+  `prefers-color-scheme` while the rest of the documentation is dark. It pins by
+  writing `localStorage.ajs-theme` via `evaluateOnNewDocument` — the same key the
+  toggle writes — so the choice survives navigation and the page's head script sees
+  it before first paint.
+- **`trim.mjs` samples the background from each image** rather than using a
+  constant. It used to carry `#0f1419`, described as "matches --bg in layout.html",
+  which was true of neither theme (dark `--bg` is `#06080f`, light is `#f6f8fc`).
+  It appeared to work only because the same constant was the colour `-trim` cropped
+  against. The first light-theme capture exposed it: nothing matched, `-trim` was a
+  no-op, and the script reported success on images it had not resized (1800px tall
+  going in, 1800px coming out). Reading the corner pixel fixes both themes.
+
+  Two related behaviours worth knowing: the operation is now a **fixed point**, so
+  re-running it does not grow the image (width is taken from the crop, not from the
+  previous pass's padding), and a file with no dead space gets a warning instead of
+  a silent "trimmed". Failure to crop is a fact about the input, not a detail to
+  hide — the same principle as the timeline's honest truncation.
 
 ---
 
